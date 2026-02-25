@@ -414,7 +414,7 @@ class TeamService:
 
                 # 确定状态
                 status = "active"
-                max_members = team.max_members if 'team' in locals() and team else 6
+                max_members = team.max_members if 'team' in locals() and team else 5
                 if current_members >= max_members:
                     status = "full"
                 elif expires_at and expires_at < datetime.now():
