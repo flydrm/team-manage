@@ -394,7 +394,10 @@
             const data = await response.json();
 
             if (response.ok && data.success) {
-                showToast(`Webhook 已同步: ${data.webhook_url || ''}`.trim(), 'success');
+                const msg = (data.message || 'Webhook 已同步').trim();
+                const url = data.webhook_url ? ` (${data.webhook_url})` : '';
+                const toastType = (data.commands_synced === false) ? 'error' : 'success';
+                showToast(`${msg}${url}`.trim(), toastType);
             } else {
                 showToast(data.error || '同步失败', 'error');
             }

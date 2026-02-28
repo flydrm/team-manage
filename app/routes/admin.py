@@ -1522,7 +1522,7 @@ async def sync_telegram_webhook(
     """
     try:
         from app.services.settings import settings_service
-        from app.services.telegram import set_webhook
+        from app.services.telegram import set_webhook, set_my_commands
 
         enabled = (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true"
         if not enabled:
@@ -1565,11 +1565,29 @@ async def sync_telegram_webhook(
                 content={"success": False, "error": result.get("error") or "同步 Webhook 失败"}
             )
 
+        # 同步命令（用于 Telegram 输入 / 时的命令联想）
+        commands = [
+            {"command": "help", "description": "查看帮助"},
+            {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
+            {"command": "start", "description": "开始/帮助"},
+        ]
+        cmd_result = await set_my_commands(
+            bot_token,
+            commands,
+            scope={"type": "default"},
+        )
+        commands_synced = bool(cmd_result.get("success"))
+        commands_error = None if commands_synced else (cmd_result.get("error") or "同步命令失败")
+
+        message = "Webhook + 命令已同步" if commands_synced else f"Webhook 已同步，但命令同步失败: {commands_error}"
+
         return JSONResponse(
             content={
                 "success": True,
-                "message": "Webhook 已同步到 Telegram",
+                "message": message,
                 "webhook_url": webhook_url,
+                "commands_synced": commands_synced,
+                "commands_error": commands_error,
             }
         )
 

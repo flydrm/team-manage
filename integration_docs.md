@@ -162,6 +162,10 @@ async def handle_low_stock(request: Request):
 #### 如何获取 Chat ID（参考）
 建议在“同步 Webhook”之前获取 chat_id（Webhook 启用后 `getUpdates` 会冲突）。
 
+说明：
+- **同步 Webhook 后仍然可以随时新增/修改白名单 chat_id**：只需要在后台“Telegram Bot”配置里更新白名单并保存即可（通常不需要重新同步 Webhook，除非你更换了 `PUBLIC_BASE_URL` / `Bot Token` / `Secret Token`）。
+- “冲突”的意思是：当 Webhook 启用后，Telegram 会将消息更新推送到 Webhook，此时再调用 `getUpdates` 会返回 Conflict 错误（这是 Telegram 的机制限制）。
+
 - 私聊：对 Bot 发送任意消息后，调用 `getUpdates` 查看 `message.chat.id`
 - 群组：把 Bot 拉进群并发送任意消息，同样通过 `getUpdates` 查看 `message.chat.id`（通常为负数，超级群一般以 `-100` 开头）
 
@@ -170,14 +174,24 @@ async def handle_low_stock(request: Request):
 curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 ```
 
+如果你已经同步了 Webhook，但后续需要再获取新的 chat_id，可以临时删除 Webhook 后再用 `getUpdates` 拉取（拿到 chat_id 后再回到后台点击一次“同步 Webhook”即可）：
+```bash
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+```
+
 ### 一键同步 Webhook
-点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`：
+点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`，并同步命令列表（`setMyCommands`，用于输入 `/` 时联想出 `/help`、`/redeem` 等命令）：
 - Webhook URL：`{PUBLIC_BASE_URL}/tg/webhook`
 - Secret Token：`tg_secret_token`
 
 系统收到回调后会校验：
 - Header `X-Telegram-Bot-Api-Secret-Token` 必须匹配 `tg_secret_token`
 - `chat_id` 必须在白名单中
+
+命令联想说明：
+- 同步完成后，在 Telegram 输入 `/` 会出现命令列表（例如 `/help`、`/redeem`、`/start`）。
+- 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
 
 ### 使用方法
 在 Telegram 对 Bot 发送命令：

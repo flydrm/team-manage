@@ -49,7 +49,7 @@ git pull && docker compose down && docker compose up -d --build
   - 管理员密码修改
   - 日志级别动态调整
   - **库存预警 Webhook** (支持库存不足时自动通知第三方系统补货)
-  - **Telegram Bot**（在 Telegram 输入 `/redeem 邮箱` 自动兑换上车，支持白名单与一键同步 Webhook）
+  - **Telegram Bot**（在 Telegram 输入 `/redeem 邮箱` 自动兑换上车，支持白名单；同步 Webhook 时会同步命令列表用于 `/` 联想）
 
 ### 自动化与集成
 - **库存预警与自动导入**

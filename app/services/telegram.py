@@ -113,3 +113,52 @@ async def set_webhook(
         logger.error(f"Telegram setWebhook 异常: {e} (token={_mask_token(bot_token)})")
         return {"success": False, "data": None, "error": str(e)}
 
+
+async def set_my_commands(
+    bot_token: str,
+    commands: list[dict],
+    *,
+    scope: Optional[Dict[str, Any]] = None,
+    language_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    设置 Telegram 命令列表（用于输入 / 时的命令联想）
+    """
+    if not bot_token:
+        return {"success": False, "data": None, "error": "Bot Token 未配置"}
+    if not commands:
+        return {"success": False, "data": None, "error": "commands 不能为空"}
+
+    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/setMyCommands"
+    payload: Dict[str, Any] = {"commands": commands}
+    if scope is not None:
+        payload["scope"] = scope
+    if language_code:
+        payload["language_code"] = language_code
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+        data = {}
+        try:
+            data = resp.json()
+        except Exception:
+            pass
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            err = data.get("description") if isinstance(data, dict) else resp.text
+            logger.warning(
+                f"Telegram setMyCommands 失败: status={resp.status_code}, token={_mask_token(bot_token)}, err={err}"
+            )
+            return {"success": False, "data": data, "error": err or f"HTTP {resp.status_code}"}
+
+        if isinstance(data, dict) and not data.get("ok", False):
+            err = data.get("description") or "Telegram 返回 ok=false"
+            logger.warning(f"Telegram setMyCommands 返回 ok=false: token={_mask_token(bot_token)}, err={err}")
+            return {"success": False, "data": data, "error": err}
+
+        return {"success": True, "data": data, "error": None}
+
+    except Exception as e:
+        logger.error(f"Telegram setMyCommands 异常: {e} (token={_mask_token(bot_token)})")
+        return {"success": False, "data": None, "error": str(e)}
