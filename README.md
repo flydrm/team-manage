@@ -49,12 +49,15 @@ git pull && docker compose down && docker compose up -d --build
   - 管理员密码修改
   - 日志级别动态调整
   - **库存预警 Webhook** (支持库存不足时自动通知第三方系统补货)
+  - **Telegram Bot**（在 Telegram 输入 `/redeem 邮箱` 自动兑换上车，支持白名单与一键同步 Webhook）
 
 ### 自动化与集成
 - **库存预警与自动导入**
   - 当可用兑换码低于设置阈值时，自动触发 Webhook 通知
   - 支持第三方程序通过 API 自动导入新 Team 账号
   - 详细对接说明见 [integration_docs.md](integration_docs.md)
+ - **Telegram Bot 自动兑换**
+   - 在 Telegram 中发送 `/redeem user@example.com` 自动兑换并分配 Team（无可用兑换码时自动生成 10 个无过期质保码后继续）
 
 ### 用户功能
 - **兑换流程**

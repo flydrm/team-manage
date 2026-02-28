@@ -12,10 +12,10 @@
         <h3>免兑换码上车</h3>
     </div>
 
-    <form id="adminAutoRedeemForm">
+    <form id="adminAutoRedeemForm" action="/admin/redeem/auto" method="post">
         <div class="form-group">
             <label for="adminAutoRedeemEmail">邮箱地址</label>
-            <input type="email" id="adminAutoRedeemEmail" class="form-control" placeholder="请输入要加入 Team 的邮箱" required>
+            <input type="email" id="adminAutoRedeemEmail" name="email" class="form-control" placeholder="请输入要加入 Team 的邮箱" required>
             <p class="text-muted" style="font-size: 0.8125rem; margin-top: 0.5rem;">
                 系统将自动选择可用兑换码（若无则自动生成 10 个无过期质保码）并自动分配 Team 完成上车。
             </p>
@@ -29,3 +29,134 @@
 </div>
 {% endblock %}
 
+{% block extra_js %}
+<script>
+    // 兜底逻辑：如果 main.js 因缓存/加载失败导致 initAdminAutoRedeem 不存在，则在本页自行绑定兑换逻辑
+    (function () {
+        if (typeof window.initAdminAutoRedeem === 'function') return;
+
+        const form = document.getElementById('adminAutoRedeemForm');
+        if (!form) return;
+
+        const emailInput = document.getElementById('adminAutoRedeemEmail');
+        const submitButton = document.getElementById('adminAutoRedeemBtn');
+        const resultContainer = document.getElementById('adminAutoRedeemResult');
+        if (!emailInput || !submitButton || !resultContainer) return;
+
+        const toast = (typeof window.showToast === 'function')
+            ? window.showToast
+            : function (msg) { alert(msg); };
+
+        const formatDt = (typeof window.formatDateTime === 'function')
+            ? window.formatDateTime
+            : function (s) { return s || '-'; };
+
+        function normalizeErrorMessage(payload, fallbackError) {
+            if (!payload) return fallbackError || '兑换失败';
+            if (typeof payload === 'string') return payload;
+            if (payload.error) return String(payload.error);
+
+            const detail = payload.detail;
+            if (detail) {
+                if (typeof detail === 'string') return detail;
+                if (Array.isArray(detail)) {
+                    return detail
+                        .map((err) => (err && err.msg ? err.msg : JSON.stringify(err)))
+                        .join('; ');
+                }
+                return JSON.stringify(detail);
+            }
+            return fallbackError || '兑换失败';
+        }
+
+        function renderResult(success, payload, fallbackError) {
+            resultContainer.style.display = 'block';
+            resultContainer.innerHTML = '';
+
+            const box = document.createElement('div');
+            box.style.padding = '1rem';
+            box.style.borderRadius = 'var(--radius-md)';
+            box.style.border = '1px solid var(--border-base)';
+            box.style.background = success ? 'var(--success-soft)' : 'var(--danger-soft)';
+
+            const title = document.createElement('div');
+            title.style.fontWeight = '700';
+            title.style.marginBottom = '0.5rem';
+            title.style.color = success ? 'var(--success)' : 'var(--danger)';
+            title.textContent = success ? '兑换成功' : '兑换失败';
+            box.appendChild(title);
+
+            const lines = [];
+            const generatedCodes = payload && payload.generated_codes ? Number(payload.generated_codes) : 0;
+
+            if (success) {
+                if (payload && payload.message) lines.push(String(payload.message));
+                if (payload && payload.used_code) lines.push(`使用兑换码: ${payload.used_code}`);
+                if (generatedCodes > 0) lines.push(`本次自动生成兑换码: ${generatedCodes}`);
+
+                const teamInfo = payload && payload.team_info ? payload.team_info : null;
+                if (teamInfo) {
+                    const teamName = teamInfo.team_name || '-';
+                    const teamId = teamInfo.team_id != null ? String(teamInfo.team_id) : '-';
+                    lines.push(`Team: ${teamName} (ID: ${teamId})`);
+                    if (teamInfo.expires_at) lines.push(`到期时间: ${formatDt(teamInfo.expires_at)}`);
+                }
+            } else {
+                const errorMsg = normalizeErrorMessage(payload, fallbackError);
+                lines.push(errorMsg);
+                if (generatedCodes > 0) lines.push(`本次自动生成兑换码: ${generatedCodes}`);
+            }
+
+            for (const line of lines) {
+                const p = document.createElement('div');
+                p.style.fontSize = '0.875rem';
+                p.style.color = 'var(--text-main)';
+                p.textContent = line;
+                box.appendChild(p);
+            }
+
+            resultContainer.appendChild(box);
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const email = emailInput.value.trim();
+            if (!email) {
+                toast('请输入邮箱地址', 'error');
+                return;
+            }
+
+            const originalButtonHtml = submitButton.innerHTML;
+            submitButton.disabled = true;
+            submitButton.textContent = '兑换中...';
+
+            try {
+                const response = await fetch('/admin/redeem/auto', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    toast('兑换成功', 'success');
+                    renderResult(true, data);
+                } else {
+                    const errorMsg = normalizeErrorMessage(data, '兑换失败');
+                    toast(errorMsg, 'error');
+                    renderResult(false, data, errorMsg);
+                }
+            } catch (error) {
+                toast('网络错误', 'error');
+                renderResult(false, null, error && error.message ? error.message : '网络错误');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.innerHTML = originalButtonHtml;
+                if (window.lucide) lucide.createIcons();
+            }
+        });
+    })();
+</script>
+{% endblock %}

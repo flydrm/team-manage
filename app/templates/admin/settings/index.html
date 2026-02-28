@@ -118,6 +118,57 @@
         <button type="submit" class="btn btn-primary">保存配置</button>
     </form>
 </div>
+
+<!-- Telegram Bot 配置 -->
+<div class="content-section">
+    <div class="section-header">
+        <h3>Telegram Bot</h3>
+    </div>
+
+    <form id="telegramForm" class="settings-form">
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="tgEnabled" name="enabled" {% if tg_enabled %}checked{% endif %}>
+                <span>启用 Telegram TEAM 兑换</span>
+            </label>
+            <p class="form-help">启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team</p>
+        </div>
+
+        <div class="form-group">
+            <label for="publicBaseUrl">PUBLIC_BASE_URL</label>
+            <input type="text" id="publicBaseUrl" name="public_base_url" value="{{ public_base_url or '' }}"
+                placeholder="https://your-domain.com" class="form-control">
+            <p class="form-help">用于拼接 Webhook 地址: <code>{PUBLIC_BASE_URL}/tg/webhook</code></p>
+        </div>
+
+        <div class="form-group">
+            <label for="tgBotToken">Bot Token</label>
+            <input type="password" id="tgBotToken" name="bot_token" value="{{ tg_bot_token or '' }}"
+                placeholder="123456789:AA...." class="form-control" autocomplete="off">
+            <p class="form-help">从 BotFather 获取的 Token</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tgAllowedChatIds">允许的 Chat ID 白名单</label>
+            <textarea id="tgAllowedChatIds" name="allowed_chat_ids" rows="3"
+                class="form-control" placeholder="例如: 123456789&#10;-1001234567890">{{ tg_allowed_chat_ids or '' }}</textarea>
+            <p class="form-help">仅白名单中的 chat_id 可使用。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tgSecretToken">Webhook Secret Token</label>
+            <input type="password" id="tgSecretToken" name="secret_token" value="{{ tg_secret_token or '' }}"
+                placeholder="留空将自动生成" class="form-control" autocomplete="off">
+            <p class="form-help">用于校验 Telegram 回调 Header <code>X-Telegram-Bot-Api-Secret-Token</code></p>
+        </div>
+
+        <div class="form-group" style="display:flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+            <button type="submit" class="btn btn-primary">保存 Telegram 配置</button>
+            <button type="button" class="btn btn-secondary" id="tgSyncWebhookBtn">同步 Webhook</button>
+            <p class="form-help" style="margin: 0;">保存后点击同步,Telegram 才会回调到本系统</p>
+        </div>
+    </form>
+</div>
 {% endblock %}
 
 {% block extra_css %}
@@ -275,6 +326,77 @@
                 showToast('Webhook 配置已保存', 'success');
             } else {
                 showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Telegram 配置表单
+    document.getElementById('telegramForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const enabled = document.getElementById('tgEnabled').checked;
+        const public_base_url = document.getElementById('publicBaseUrl').value.trim();
+        const bot_token = document.getElementById('tgBotToken').value.trim();
+        const allowed_chat_ids = document.getElementById('tgAllowedChatIds').value.trim();
+        const secret_token = document.getElementById('tgSecretToken').value.trim();
+
+        if (enabled) {
+            if (!bot_token) {
+                showToast('请填写 Bot Token', 'error');
+                return;
+            }
+            if (!public_base_url) {
+                showToast('请填写 PUBLIC_BASE_URL', 'error');
+                return;
+            }
+            if (!allowed_chat_ids) {
+                showToast('请至少配置一个允许的 Chat ID', 'error');
+                return;
+            }
+        }
+
+        try {
+            const response = await fetch('/admin/settings/telegram', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, secret_token })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('Telegram 配置已保存', 'success');
+                if (data.secret_token) {
+                    document.getElementById('tgSecretToken').value = data.secret_token;
+                }
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Telegram Webhook 同步
+    document.getElementById('tgSyncWebhookBtn').addEventListener('click', async () => {
+        try {
+            const response = await fetch('/admin/settings/telegram/sync-webhook', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(`Webhook 已同步: ${data.webhook_url || ''}`.trim(), 'success');
+            } else {
+                showToast(data.error || '同步失败', 'error');
             }
         } catch (error) {
             showToast('网络错误', 'error');
