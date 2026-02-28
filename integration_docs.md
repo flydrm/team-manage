@@ -32,7 +32,7 @@
 - **认证方式**:
   1. **Session 认证**: 浏览器访问时自动使用。
   2. **API Key 认证**: 对接程序建议使用此方式。在 `Header` 中添加 `X-API-Key`。
-- **配置位置**: 管理员后台 -> 系统设置 -> 库存预警 Webhook -> API Key。
+- **配置位置**: 管理员后台 -> 系统设置 -> 库存预警 Webhook -> API Key。（该值存储在数据库 `settings` 表中，不依赖环境变量）
 
 ### 导入模式 A：单账号导入 (Single)
 适用于逐个导入账号。
@@ -142,3 +142,68 @@ async def handle_low_stock(request: Request):
     
     return {"status": "ok"}
 ```
+
+---
+
+## 5. Telegram Bot 自动兑换（Webhook）
+
+该功能用于在 Telegram 中通过命令触发“后台免兑换码上车”流程（与 `POST /admin/redeem/auto` 逻辑一致）。
+
+### 配置位置
+管理员后台 -> 系统设置 -> **库存预警 Webhook** 下方 -> **Telegram Bot**
+
+需要配置：
+- **启用 Telegram TEAM 兑换**
+- **PUBLIC_BASE_URL**：你的系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
+- **Bot Token**：从 BotFather 获取
+- **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
+- **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
+
+#### 如何获取 Chat ID（参考）
+建议在“同步 Webhook”之前获取 chat_id（Webhook 启用后 `getUpdates` 会冲突）。
+
+说明：
+- **同步 Webhook 后仍然可以随时新增/修改白名单 chat_id**：只需要在后台“Telegram Bot”配置里更新白名单并保存即可（通常不需要重新同步 Webhook，除非你更换了 `PUBLIC_BASE_URL` / `Bot Token` / `Secret Token`）。
+- “冲突”的意思是：当 Webhook 启用后，Telegram 会将消息更新推送到 Webhook，此时再调用 `getUpdates` 会返回 Conflict 错误（这是 Telegram 的机制限制）。
+
+- 私聊：对 Bot 发送任意消息后，调用 `getUpdates` 查看 `message.chat.id`
+- 群组：把 Bot 拉进群并发送任意消息，同样通过 `getUpdates` 查看 `message.chat.id`（通常为负数，超级群一般以 `-100` 开头）
+
+示例：
+```bash
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+```
+
+如果你已经同步了 Webhook，但后续需要再获取新的 chat_id，可以临时删除 Webhook 后再用 `getUpdates` 拉取（拿到 chat_id 后再回到后台点击一次“同步 Webhook”即可）：
+```bash
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+```
+
+### 一键同步 Webhook
+点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`，并同步命令列表（`setMyCommands`，用于输入 `/` 时联想出 `/help`、`/redeem` 等命令）：
+- Webhook URL：`{PUBLIC_BASE_URL}/tg/webhook`
+- Secret Token：`tg_secret_token`
+
+系统收到回调后会校验：
+- Header `X-Telegram-Bot-Api-Secret-Token` 必须匹配 `tg_secret_token`
+- `chat_id` 必须在白名单中
+
+命令联想说明：
+- 同步完成后，在 Telegram 输入 `/` 会出现命令列表（例如 `/help`、`/redeem`、`/start`）。
+- 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
+
+### 使用方法
+在 Telegram 对 Bot 发送命令：
+```
+/redeem user@example.com
+```
+
+返回信息包含：
+- 兑换结果
+- 使用的兑换码 `used_code`（注意：会暴露兑换码）
+- 分配的 Team 信息（若兑换成功）
+
+说明：
+- 若系统无可用兑换码，会自动生成 10 个**无过期质保**兑换码后继续兑换
+- 为避免群聊噪音，默认不响应非命令消息

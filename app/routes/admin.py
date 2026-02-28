@@ -3,6 +3,8 @@
 处理管理员面板的所有页面和操作
 """
 import logging
+import secrets
+import re
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -10,13 +12,13 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_
 from pydantic import BaseModel, Field, EmailStr
+from pydantic import ValidationError
 
 from app.database import get_db
 from app.dependencies.auth import require_admin
 from app.models import RedemptionCode
 from app.services.team import TeamService
 from app.services.redemption import RedemptionService
-from app.services.redeem_flow import redeem_flow_service
 from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
@@ -91,19 +93,6 @@ class BulkCodeUpdateRequest(BaseModel):
     warranty_days: Optional[int] = Field(None, description="质保天数")
 
 
-def _should_retry_auto_redeem_error(error_message: str) -> bool:
-    if not error_message:
-        return False
-    retry_keywords = [
-        "兑换码不存在",
-        "兑换码已被使用",
-        "兑换码已过期",
-        "兑换码已被占用",
-        "兑换码记录丢失",
-    ]
-    return any(kw in error_message for kw in retry_keywords)
-
-
 @router.get("/", response_class=HTMLResponse)
 async def admin_dashboard(
     request: Request,
@@ -170,7 +159,7 @@ async def admin_dashboard(
 
 @router.post("/redeem/auto")
 async def admin_auto_redeem(
-    redeem_data: AutoRedeemRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
@@ -185,157 +174,40 @@ async def admin_auto_redeem(
     - Session（管理员登录）
     - 或 Header `X-API-Key`（用于自动化对接）
     """
-    email = str(redeem_data.email).strip()
+    from app.services.auto_redeem import auto_redeem_by_email
 
-    generated_codes = 0
-    last_error = "兑换失败"
-    max_attempts = 5
-
-    for attempt in range(max_attempts):
+    # 兼容两种提交方式：
+    # - 前端 fetch JSON: {"email": "..."}
+    # - 浏览器表单 POST: email=...
+    raw_email = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            raw_email = body.get("email")
+    except Exception:
         try:
-            # 1) 先把已过期但仍是 unused 的兑换码标记为 expired（避免“看起来有库存但实际不可用”）
-            try:
-                now = get_now()
-                await db.execute(
-                    update(RedemptionCode)
-                    .where(
-                        and_(
-                            RedemptionCode.status == "unused",
-                            RedemptionCode.expires_at.is_not(None),
-                            RedemptionCode.expires_at < now
-                        )
-                    )
-                    .values(status="expired")
-                )
-                await db.commit()
-            except Exception as e:
-                logger.warning(f"清理过期兑换码失败: {e}")
-                await db.rollback()
+            form = await request.form()
+            raw_email = form.get("email")
+        except Exception:
+            raw_email = None
 
-            # 2) 选择一个可用兑换码（unused 且未过期）
-            stmt = (
-                select(RedemptionCode.code)
-                .where(
-                    RedemptionCode.status == "unused",
-                    or_(
-                        RedemptionCode.expires_at.is_(None),
-                        RedemptionCode.expires_at > get_now()
-                    )
-                )
-                .order_by(RedemptionCode.created_at.asc())
-                .limit(1)
-            )
-            result = await db.execute(stmt)
-            code = result.scalar_one_or_none()
+    try:
+        redeem_data = AutoRedeemRequest(email=str(raw_email or "").strip())
+    except ValidationError as ve:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": ve.errors()})
 
-            # 3) 若没有可用兑换码，则自动生成 10 个（无过期、质保）
-            if not code:
-                logger.info(f"管理员自动兑换：无可用兑换码，自动生成 10 个后重试 (attempt={attempt + 1}/{max_attempts})")
-                gen_result = await redemption_service.generate_code_batch(
-                    db_session=db,
-                    count=10,
-                    expires_days=None,
-                    has_warranty=True,
-                    warranty_days=30
-                )
+    email = str(redeem_data.email).strip()
+    result = await auto_redeem_by_email(email, db)
 
-                if not gen_result.get("success"):
-                    return JSONResponse(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        content={
-                            "success": False,
-                            "message": None,
-                            "used_code": None,
-                            "generated_codes": generated_codes,
-                            "team_info": None,
-                            "error": gen_result.get("error") or "自动生成兑换码失败"
-                        }
-                    )
+    if result.get("success"):
+        return JSONResponse(content=result)
 
-                total_generated = int(gen_result.get("total") or 0)
-                if total_generated <= 0:
-                    return JSONResponse(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        content={
-                            "success": False,
-                            "message": None,
-                            "used_code": None,
-                            "generated_codes": generated_codes,
-                            "team_info": None,
-                            "error": "自动生成兑换码失败：未生成任何兑换码"
-                        }
-                    )
+    error = result.get("error") or "兑换失败"
+    status_code = status.HTTP_400_BAD_REQUEST
+    if "自动生成兑换码失败" in error or "批量生成兑换码失败" in error or error.startswith("自动兑换失败"):
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-                generated_codes += total_generated
-                continue
-
-            # 4) 使用选中的兑换码执行兑换（自动分配 Team）
-            logger.info(f"管理员自动兑换: email={email}, code={code} (attempt={attempt + 1}/{max_attempts})")
-            redeem_result = await redeem_flow_service.redeem_and_join_team(
-                email=email,
-                code=code,
-                team_id=None,
-                db_session=db
-            )
-
-            if redeem_result.get("success"):
-                return JSONResponse(
-                    content={
-                        "success": True,
-                        "message": redeem_result.get("message"),
-                        "used_code": code,
-                        "generated_codes": generated_codes,
-                        "team_info": redeem_result.get("team_info"),
-                        "error": None
-                    }
-                )
-
-            last_error = redeem_result.get("error") or "兑换失败"
-            if _should_retry_auto_redeem_error(last_error) and attempt < max_attempts - 1:
-                logger.warning(f"管理员自动兑换失败(可重试): {last_error} (attempt={attempt + 1}/{max_attempts})")
-                continue
-
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "success": False,
-                    "message": None,
-                    "used_code": None,
-                    "generated_codes": generated_codes,
-                    "team_info": None,
-                    "error": last_error
-                }
-            )
-
-        except Exception as e:
-            await db.rollback()
-            last_error = str(e)
-            logger.error(f"管理员自动兑换异常: {e} (attempt={attempt + 1}/{max_attempts})")
-            if attempt < max_attempts - 1:
-                continue
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={
-                    "success": False,
-                    "message": None,
-                    "used_code": None,
-                    "generated_codes": generated_codes,
-                    "team_info": None,
-                    "error": f"自动兑换失败: {last_error}"
-                }
-            )
-
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={
-            "success": False,
-            "message": None,
-            "used_code": None,
-            "generated_codes": generated_codes,
-            "team_info": None,
-            "error": last_error
-        }
-    )
+    return JSONResponse(status_code=status_code, content=result)
 
 
 @router.get("/redeem", response_class=HTMLResponse)
@@ -1350,7 +1222,12 @@ async def settings_page(
                 "log_level": log_level,
                 "webhook_url": await settings_service.get_setting(db, "webhook_url", ""),
                 "low_stock_threshold": await settings_service.get_setting(db, "low_stock_threshold", "10"),
-                "api_key": await settings_service.get_setting(db, "api_key", "")
+                "api_key": await settings_service.get_setting(db, "api_key", ""),
+                "public_base_url": await settings_service.get_setting(db, "public_base_url", ""),
+                "tg_enabled": (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true",
+                "tg_bot_token": await settings_service.get_setting(db, "tg_bot_token", ""),
+                "tg_allowed_chat_ids": await settings_service.get_setting(db, "tg_allowed_chat_ids", ""),
+                "tg_secret_token": await settings_service.get_setting(db, "tg_secret_token", ""),
             }
         )
 
@@ -1378,6 +1255,14 @@ class WebhookSettingsRequest(BaseModel):
     webhook_url: str = Field("", description="Webhook URL")
     low_stock_threshold: int = Field(10, description="库存阈值")
     api_key: str = Field("", description="API Key")
+
+class TelegramSettingsRequest(BaseModel):
+    """Telegram Bot 设置请求"""
+    enabled: bool = Field(False, description="是否启用 Telegram Bot 兑换")
+    public_base_url: str = Field("", description="PUBLIC_BASE_URL，用于拼接 Webhook 回调地址")
+    bot_token: str = Field("", description="Telegram Bot Token")
+    allowed_chat_ids: str = Field("", description="允许的 chat_id 白名单，逗号/空格/换行分隔")
+    secret_token: str = Field("", description="Telegram Webhook Secret Token（为空则自动生成）")
 
 
 @router.post("/settings/proxy")
@@ -1517,4 +1402,198 @@ async def update_webhook_settings(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": f"更新失败: {str(e)}"}
+        )
+
+
+def _normalize_public_base_url(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    return raw.rstrip("/")
+
+
+def _parse_tg_chat_ids(raw: str) -> List[int]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[, \t\r\n]+", raw)
+    ids: List[int] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        try:
+            ids.append(int(p))
+        except Exception:
+            raise ValueError(f"无效 chat_id: {p}")
+    return ids
+
+
+@router.post("/settings/telegram")
+async def update_telegram_settings(
+    tg_data: TelegramSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """
+    更新 Telegram Bot 设置
+    """
+    try:
+        from app.services.settings import settings_service
+
+        enabled = bool(tg_data.enabled)
+        public_base_url = _normalize_public_base_url(tg_data.public_base_url)
+        bot_token = (tg_data.bot_token or "").strip()
+        allowed_chat_ids_raw = (tg_data.allowed_chat_ids or "").strip()
+        secret_token = (tg_data.secret_token or "").strip()
+
+        # 基础校验（启用时强校验；未启用时允许空值保存）
+        if enabled:
+            if not bot_token:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "请填写 Telegram Bot Token"}
+                )
+            if not public_base_url:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "请填写 PUBLIC_BASE_URL（用于拼接 Webhook）"}
+                )
+            if not (public_base_url.startswith("http://") or public_base_url.startswith("https://")):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "PUBLIC_BASE_URL 必须以 http:// 或 https:// 开头"}
+                )
+            if not allowed_chat_ids_raw:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "请至少配置一个允许的 Chat ID"}
+                )
+            try:
+                _ = _parse_tg_chat_ids(allowed_chat_ids_raw)
+            except Exception as e:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": str(e)}
+                )
+
+        # secret_token 为空则自动生成，避免误配置导致所有回调 403
+        if not secret_token:
+            secret_token = secrets.token_urlsafe(32)
+
+        settings = {
+            "tg_enabled": "true" if enabled else "false",
+            "public_base_url": public_base_url,
+            "tg_bot_token": bot_token,
+            "tg_allowed_chat_ids": allowed_chat_ids_raw,
+            "tg_secret_token": secret_token,
+        }
+
+        success = await settings_service.update_settings(db, settings)
+        if not success:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"success": False, "error": "保存失败"}
+            )
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "Telegram 配置已保存",
+                "secret_token": secret_token,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"更新 Telegram 配置失败: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": f"更新失败: {str(e)}"}
+        )
+
+
+@router.post("/settings/telegram/sync-webhook")
+async def sync_telegram_webhook(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """
+    同步 Telegram Webhook 到当前系统
+    """
+    try:
+        from app.services.settings import settings_service
+        from app.services.telegram import set_webhook, set_my_commands
+
+        enabled = (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true"
+        if not enabled:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "Telegram 兑换未启用"}
+            )
+
+        public_base_url = _normalize_public_base_url(await settings_service.get_setting(db, "public_base_url", ""))
+        bot_token = await settings_service.get_setting(db, "tg_bot_token", "")
+        secret_token = await settings_service.get_setting(db, "tg_secret_token", "")
+
+        if not public_base_url:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "PUBLIC_BASE_URL 未配置"}
+            )
+        if not (public_base_url.startswith("http://") or public_base_url.startswith("https://")):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "PUBLIC_BASE_URL 必须以 http:// 或 https:// 开头"}
+            )
+        if not bot_token:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "Telegram Bot Token 未配置"}
+            )
+        if not secret_token:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "Telegram Secret Token 未配置（请先保存 Telegram 配置）"}
+            )
+
+        webhook_url = f"{public_base_url}/tg/webhook"
+        result = await set_webhook(bot_token, webhook_url, secret_token=secret_token)
+
+        if not result.get("success"):
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"success": False, "error": result.get("error") or "同步 Webhook 失败"}
+            )
+
+        # 同步命令（用于 Telegram 输入 / 时的命令联想）
+        commands = [
+            {"command": "help", "description": "查看帮助"},
+            {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
+            {"command": "start", "description": "开始/帮助"},
+        ]
+        cmd_result = await set_my_commands(
+            bot_token,
+            commands,
+            scope={"type": "default"},
+        )
+        commands_synced = bool(cmd_result.get("success"))
+        commands_error = None if commands_synced else (cmd_result.get("error") or "同步命令失败")
+
+        message = "Webhook + 命令已同步" if commands_synced else f"Webhook 已同步，但命令同步失败: {commands_error}"
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": message,
+                "webhook_url": webhook_url,
+                "commands_synced": commands_synced,
+                "commands_error": commands_error,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"同步 Telegram Webhook 失败: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": f"同步失败: {str(e)}"}
         )
