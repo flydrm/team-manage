@@ -131,7 +131,10 @@
                 <input type="checkbox" id="tgEnabled" name="enabled" {% if tg_enabled %}checked{% endif %}>
                 <span>启用 Telegram TEAM 兑换</span>
             </label>
-            <p class="form-help">启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team</p>
+            <p class="form-help">
+                启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team；
+                私聊 Bot 发送 <code>/importteam AT</code> 可补账号导入（仅私聊）
+            </p>
         </div>
 
         <div class="form-group">

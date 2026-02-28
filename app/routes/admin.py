@@ -1566,20 +1566,46 @@ async def sync_telegram_webhook(
             )
 
         # 同步命令（用于 Telegram 输入 / 时的命令联想）
-        commands = [
+        # - 默认 scope（群/频道/通用）：不展示高风险命令
+        # - 私聊 scope：展示补账号导入命令 /importteam
+        commands_default = [
             {"command": "help", "description": "查看帮助"},
             {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
             {"command": "start", "description": "开始/帮助"},
         ]
-        cmd_result = await set_my_commands(
+        commands_private = [
+            *commands_default,
+            {"command": "importteam", "description": "补账号导入(仅私聊)：/importteam AT"},
+        ]
+
+        cmd_default_result = await set_my_commands(
             bot_token,
-            commands,
+            commands_default,
             scope={"type": "default"},
         )
-        commands_synced = bool(cmd_result.get("success"))
-        commands_error = None if commands_synced else (cmd_result.get("error") or "同步命令失败")
+        commands_synced_default = bool(cmd_default_result.get("success"))
+        commands_error_default = None if commands_synced_default else (cmd_default_result.get("error") or "同步命令失败")
 
-        message = "Webhook + 命令已同步" if commands_synced else f"Webhook 已同步，但命令同步失败: {commands_error}"
+        cmd_private_result = await set_my_commands(
+            bot_token,
+            commands_private,
+            scope={"type": "all_private_chats"},
+        )
+        commands_synced_private = bool(cmd_private_result.get("success"))
+        commands_error_private = None if commands_synced_private else (cmd_private_result.get("error") or "同步命令失败")
+
+        commands_synced = commands_synced_default and commands_synced_private
+        if commands_synced:
+            message = "Webhook + 命令已同步"
+            commands_error = None
+        else:
+            parts = []
+            if not commands_synced_default:
+                parts.append(f"default: {commands_error_default}")
+            if not commands_synced_private:
+                parts.append(f"private: {commands_error_private}")
+            commands_error = "; ".join([p for p in parts if p]) or "同步命令失败"
+            message = f"Webhook 已同步，但命令同步失败: {commands_error}"
 
         return JSONResponse(
             content={
@@ -1588,6 +1614,10 @@ async def sync_telegram_webhook(
                 "webhook_url": webhook_url,
                 "commands_synced": commands_synced,
                 "commands_error": commands_error,
+                "commands_synced_default": commands_synced_default,
+                "commands_error_default": commands_error_default,
+                "commands_synced_private": commands_synced_private,
+                "commands_error_private": commands_error_private,
             }
         )
 

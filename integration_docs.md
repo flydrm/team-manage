@@ -6,6 +6,9 @@
 
 当系统内所有活跃 Team 的总剩余车位（`max_members - current_members`）数量低于或等于管理员设置的阈值时，系统会向配置的 Webhook URL 发送 POST 请求。
 
+同时，如果启用了 **Telegram Bot** 并配置了 `tg_allowed_chat_ids`，系统也会向白名单 chat_id 推送一条库存预警消息（默认 10 分钟内去抖，避免重复刷屏）。
+如果你只希望使用 Telegram 通知，也可以不配置 Webhook URL。
+
 ### 请求信息
 - **方法**: `POST`
 - **Content-Type**: `application/json`
@@ -37,17 +40,16 @@
 ### 导入模式 A：单账号导入 (Single)
 适用于逐个导入账号。
 
-**认证逻辑（三选一）**:
-- 提供 `access_token`: 最直接的方式。
-- 提供 `session_token`: 如果 AT 缺失，系统会尝试用 ST 刷新获取 AT。
-- 提供 `refresh_token` + `client_id`: 如果上述皆无，系统尝试用 RT 刷新。
+**重要说明（请按实际接口实现调用）**:
+- 当前 `POST /admin/teams/import` 在 `import_type=single` 时 **API 层要求 `access_token` 必填**（即使你也提供了 ST/RT）。
+- `session_token` / `refresh_token + client_id` 用于 **当 AT 过期时自动刷新**，因此你也可以传入“已过期的 AT”配合 ST/RT 让系统刷新后完成导入。
 
 **Payload 结构**:
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `import_type` | string | **是** | 固定为 `"single"` |
-| `access_token` | string | 建议 | ChatGPT 的 Access Token (AT) |
-| `session_token` | string | 建议 | 用于自动刷新 AT 的 Session Token (ST) |
+| `access_token` | string | **是** | ChatGPT 的 Access Token (AT)，可为过期 AT（会尝试用 ST/RT 刷新） |
+| `session_token` | string | 否 | 用于自动刷新 AT 的 Session Token (ST) |
 | `email` | string | 否 | 账号邮箱。若不填，系统将尝试从 AT 中解析。 |
 | `account_id` | string | 否 | Team 的 Account ID。若不填，系统将自动获取该账号下所有活跃的 Team。 |
 | `refresh_token`| string | 否 | 用于刷新的 Refresh Token (RT) |
@@ -149,6 +151,8 @@ async def handle_low_stock(request: Request):
 
 该功能用于在 Telegram 中通过命令触发“后台免兑换码上车”流程（与 `POST /admin/redeem/auto` 逻辑一致）。
 
+另外，Telegram Bot 也支持“补账号导入”（复用 `TeamService.import_team_single` 的导入逻辑），用于在库存不足时快速导入新的 Team 账号。
+
 ### 配置位置
 管理员后台 -> 系统设置 -> **库存预警 Webhook** 下方 -> **Telegram Bot**
 
@@ -190,13 +194,26 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 - `chat_id` 必须在白名单中
 
 命令联想说明：
-- 同步完成后，在 Telegram 输入 `/` 会出现命令列表（例如 `/help`、`/redeem`、`/start`）。
+- 同步完成后，在 Telegram 输入 `/` 会出现命令列表：
+  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`
+  - **私聊**：除以上命令外，还会出现 `/importteam`（补账号导入）
 - 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
 
 ### 使用方法
 在 Telegram 对 Bot 发送命令：
 ```
 /redeem user@example.com
+```
+
+补账号导入（**仅私聊**，避免在群聊泄漏 Token）：
+```
+/importteam <Access Token>
+```
+建议导入完成后手动删除包含 AT 的消息，以降低泄漏风险。
+
+也支持“回复导入”：回复一条包含 AT 的消息，然后发送：
+```
+/importteam
 ```
 
 返回信息包含：

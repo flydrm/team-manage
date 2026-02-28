@@ -49,15 +49,16 @@ git pull && docker compose down && docker compose up -d --build
   - 管理员密码修改
   - 日志级别动态调整
   - **库存预警 Webhook** (支持库存不足时自动通知第三方系统补货)
-  - **Telegram Bot**（在 Telegram 输入 `/redeem 邮箱` 自动兑换上车，支持白名单；同步 Webhook 时会同步命令列表用于 `/` 联想）
+  - **Telegram Bot**（`/redeem 邮箱` 自动兑换上车；私聊支持 `/importteam AT` 补账号导入；同步 Webhook 时会同步命令列表用于 `/` 联想；库存预警也可推送到 TG）
 
 ### 自动化与集成
 - **库存预警与自动导入**
-  - 当可用兑换码低于设置阈值时，自动触发 Webhook 通知
+  - 当系统总可用车位低于或等于阈值时，自动触发库存预警通知（Webhook / Telegram）
   - 支持第三方程序通过 API 自动导入新 Team 账号
   - 详细对接说明见 [integration_docs.md](integration_docs.md)
 - **Telegram Bot 自动兑换**
   - 在 Telegram 中发送 `/redeem user@example.com` 自动兑换并分配 Team（无可用兑换码时自动生成 10 个无过期质保码后继续）
+  - 私聊 Bot 发送 `/importteam <Access Token>` 可直接导入/补账号（复用后台 Team 导入逻辑）
   - 配置与对接说明见 [integration_docs.md](integration_docs.md)
 
 ### 用户功能
@@ -311,7 +312,7 @@ team-manage/
    - 修改管理员密码
    - 调整日志级别
    - 配置库存预警 Webhook 与 API Key（用于 `X-API-Key` 认证管理员接口）
-   - 配置 Telegram Bot（保存后点击“同步 Webhook”）
+   - 配置 Telegram Bot（保存后点击“同步 Webhook”；私聊可用 `/redeem` 与 `/importteam`）
 
 ### 用户兑换流程
 
