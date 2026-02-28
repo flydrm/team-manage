@@ -6,7 +6,7 @@
 
 ### 一键部署
 ```bash
-git clone https://github.com/tibbar213/team-manage.git
+git clone https://github.com/flydrm/team-manage.git
 cd team-manage
 cp .env.example .env
 docker compose up -d
@@ -35,7 +35,7 @@ git pull && docker compose down && docker compose up -d --build
   - 删除未使用的兑换码
 
 - **TEAM 兑换（后台免兑换码）**
-  - 控制台输入邮箱即可自动分配 Team 并发送邀请
+  - 在管理端“TEAM兑换”页面输入邮箱即可自动分配 Team 并发送邀请
   - 自动选择可用兑换码；若无可用兑换码则自动生成 10 个**无过期质保**兑换码后完成兑换
   - 支持使用 `X-API-Key` 调用 `POST /admin/redeem/auto` 实现自动化上车
 
@@ -56,8 +56,9 @@ git pull && docker compose down && docker compose up -d --build
   - 当可用兑换码低于设置阈值时，自动触发 Webhook 通知
   - 支持第三方程序通过 API 自动导入新 Team 账号
   - 详细对接说明见 [integration_docs.md](integration_docs.md)
- - **Telegram Bot 自动兑换**
-   - 在 Telegram 中发送 `/redeem user@example.com` 自动兑换并分配 Team（无可用兑换码时自动生成 10 个无过期质保码后继续）
+- **Telegram Bot 自动兑换**
+  - 在 Telegram 中发送 `/redeem user@example.com` 自动兑换并分配 Team（无可用兑换码时自动生成 10 个无过期质保码后继续）
+  - 配置与对接说明见 [integration_docs.md](integration_docs.md)
 
 ### 用户功能
 - **兑换流程**
@@ -90,7 +91,7 @@ git pull && docker compose down && docker compose up -d --build
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/tibbar213/team-manage.git
+git clone https://github.com/flydrm/team-manage.git
 cd team-manage
 ```
 
@@ -221,49 +222,31 @@ docker compose build --no-cache
 
 ```
 team-manage/
-├── app/                        # 应用主目录
-│   ├── main.py                 # FastAPI 入口文件
-│   ├── config.py               # 配置管理
-│   ├── database.py             # 数据库连接
-│   ├── models.py               # SQLAlchemy 模型
-│   ├── routes/                 # 路由模块
-│   │   ├── admin.py            # 管理员路由
-│   │   ├── user.py             # 用户路由
-│   │   ├── api.py              # API 端点
-│   │   ├── auth.py             # 认证路由
-│   │   └── redeem.py           # 兑换路由
-│   ├── services/               # 业务逻辑服务
-│   │   ├── auth.py             # 认证服务
-│   │   ├── chatgpt.py          # ChatGPT API 集成
-│   │   ├── encryption.py       # 加密服务
-│   │   ├── redeem_flow.py      # 兑换流程服务
-│   │   ├── redemption.py       # 兑换码管理服务
-│   │   ├── settings.py         # 系统设置服务
-│   │   └── team.py             # Team 管理服务
-│   ├── utils/                  # 工具模块
-│   │   ├── jwt_parser.py       # JWT Token 解析
-│   │   └── token_parser.py     # Token 正则匹配
-│   ├── dependencies/           # FastAPI 依赖
-│   │   └── auth.py             # 认证依赖
-│   ├── templates/              # Jinja2 模板
-│   │   ├── base.html           # 基础布局
-│   │   ├── auth/               # 认证页面
-│   │   ├── admin/              # 管理员页面
-│   │   └── user/               # 用户页面
-│   └── static/                 # 静态文件
-│       ├── css/                # 样式文件
-│       └── js/                 # JavaScript 文件
-├── init_db.py                  # 数据库初始化脚本
-├── requirements.txt            # Python 依赖
-├── Dockerfile                  # Docker 镜像构建文件
-├── docker-compose.yml          # Docker 服务编排文件
-├── .dockerignore               # Docker 忽略文件
-├── .env.example                # 环境变量示例
-├── CLAUDE.md                   # Claude Code 指南
-├── 需求.md                     # 项目需求文档
-├── 任务.md                     # 任务跟踪文档
-├── 接口.md                     # API 接口文档
-└── README.md                   # 项目说明文档
+├── AGENTS.md
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── init_db.py
+├── integration_docs.md
+├── test_webhook.py
+├── README.md
+└── app/                        # 应用主目录
+    ├── main.py                 # FastAPI 入口文件
+    ├── config.py               # 配置管理
+    ├── database.py             # 数据库连接
+    ├── models.py               # SQLAlchemy 模型
+    ├── routes/                 # 路由模块
+    │   ├── admin.py            # 管理后台
+    │   ├── redeem.py           # 用户兑换页面
+    │   ├── tg.py               # Telegram Webhook
+    │   └── ...
+    ├── services/               # 业务逻辑服务
+    │   ├── auto_redeem.py      # 自动兑换（仅邮箱）
+    │   ├── telegram.py         # Telegram API 封装
+    │   └── ...
+    ├── templates/              # Jinja2 模板
+    └── static/                 # 静态文件
 ```
 
 ## 🔧 配置说明
@@ -313,7 +296,7 @@ team-manage/
    - 生成后可复制或下载
 
 4. **TEAM 兑换（后台免兑换码上车）**
-   - 进入"控制台"页面的“TEAM 兑换”
+   - 进入左侧菜单“TEAM兑换”
    - 输入用户邮箱，点击“自动兑换上车”
    - 系统会自动选择可用兑换码并自动分配 Team；若无可用兑换码则自动生成 10 个**无过期质保**兑换码后完成兑换
 
@@ -327,6 +310,8 @@ team-manage/
    - 配置代理（如需）
    - 修改管理员密码
    - 调整日志级别
+   - 配置库存预警 Webhook 与 API Key（用于 `X-API-Key` 认证管理员接口）
+   - 配置 Telegram Bot（保存后点击“同步 Webhook”）
 
 ### 用户兑换流程
 
@@ -351,7 +336,7 @@ team-manage/
 
 ## 🔌 API 接口
 
-详细的 API 接口文档请参考 [接口.md](接口.md)。
+接口与参数以 FastAPI 文档为准：访问 `/docs` 查看（Swagger UI）。
 
 主要接口：
 
@@ -360,7 +345,7 @@ team-manage/
 - `POST /redeem/verify` - 验证兑换码
 - `POST /redeem/confirm` - 确认兑换
 - `GET /admin` - 管理员控制台
-- `GET /admin/teams/import` - Team 导入页面
+- `POST /admin/teams/import` - Team 导入
 - `GET /admin/codes` - 兑换码列表
 - `GET /admin/records` - 使用记录
 - `POST /admin/redeem/auto` - 管理端自动兑换（仅需邮箱，自动分配 Team；支持 Session 或 `X-API-Key`）
@@ -389,6 +374,11 @@ python init_db.py
 1. 确保 AT Token 格式正确
 2. 检查 Token 是否过期
 3. 验证 Token 是否有 Team 管理权限
+
+### Docker Permission Denied
+如果遇到 `permission denied while trying to connect to the Docker daemon socket`：
+- 使用 `sudo docker compose up -d` 运行
+- 或将当前用户加入 `docker` 用户组后重新登录
 
 ## 📄 许可证
 

@@ -159,6 +159,17 @@ async def handle_low_stock(request: Request):
 - **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
 - **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
 
+#### 如何获取 Chat ID（参考）
+建议在“同步 Webhook”之前获取 chat_id（Webhook 启用后 `getUpdates` 会冲突）。
+
+- 私聊：对 Bot 发送任意消息后，调用 `getUpdates` 查看 `message.chat.id`
+- 群组：把 Bot 拉进群并发送任意消息，同样通过 `getUpdates` 查看 `message.chat.id`（通常为负数，超级群一般以 `-100` 开头）
+
+示例：
+```bash
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+```
+
 ### 一键同步 Webhook
 点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`：
 - Webhook URL：`{PUBLIC_BASE_URL}/tg/webhook`
