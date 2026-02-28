@@ -338,6 +338,30 @@ async def admin_auto_redeem(
     )
 
 
+@router.get("/redeem", response_class=HTMLResponse)
+async def redeem_page(
+    request: Request,
+    current_user: dict = Depends(require_admin)
+):
+    """TEAM 兑换页面（免兑换码上车）"""
+    try:
+        from app.main import templates
+        return templates.TemplateResponse(
+            "admin/redeem/index.html",
+            {
+                "request": request,
+                "user": current_user,
+                "active_page": "redeem",
+            }
+        )
+    except Exception as e:
+        logger.error(f"加载 TEAM 兑换页面失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"加载页面失败: {str(e)}"
+        )
+
+
 @router.post("/teams/{team_id}/delete")
 async def delete_team(
     team_id: int,

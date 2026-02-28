@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}TEAM 兑换 - GPT Team 管理系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>TEAM 兑换</h2>
+</div>
+
+<div class="content-section">
+    <div class="section-header">
+        <h3>免兑换码上车</h3>
+    </div>
+
+    <form id="adminAutoRedeemForm">
+        <div class="form-group">
+            <label for="adminAutoRedeemEmail">邮箱地址</label>
+            <input type="email" id="adminAutoRedeemEmail" class="form-control" placeholder="请输入要加入 Team 的邮箱" required>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-top: 0.5rem;">
+                系统将自动选择可用兑换码（若无则自动生成 10 个无过期质保码）并自动分配 Team 完成上车。
+            </p>
+        </div>
+        <button type="submit" class="btn btn-primary" id="adminAutoRedeemBtn">
+            <i data-lucide="send" style="width: 16px; height: 16px;"></i> 自动兑换上车
+        </button>
+    </form>
+
+    <div id="adminAutoRedeemResult" style="display: none; margin-top: 1rem;"></div>
+</div>
+{% endblock %}
+
