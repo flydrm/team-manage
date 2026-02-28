@@ -34,6 +34,11 @@ git pull && docker compose down && docker compose up -d --build
   - 导出兑换码为文本文件
   - 删除未使用的兑换码
 
+- **TEAM 兑换（后台免兑换码）**
+  - 控制台输入邮箱即可自动分配 Team 并发送邀请
+  - 自动选择可用兑换码；若无可用兑换码则自动生成 10 个**无过期质保**兑换码后完成兑换
+  - 支持使用 `X-API-Key` 调用 `POST /admin/redeem/auto` 实现自动化上车
+
 - **使用记录查询**
   - 多维度筛选（邮箱、兑换码、Team ID、日期范围）
   - 分页展示（每页20条记录）
@@ -138,6 +143,9 @@ PROXY=
 
 # JWT 配置
 JWT_VERIFY_SIGNATURE=False
+
+# Team 配置
+TEAM_MAX_MEMBERS_DEFAULT=5  # 新导入 Team 的默认最大成员数（已存在 Team 以数据库记录为准）
 ```
 
 ### 5. 初始化数据库
@@ -276,6 +284,10 @@ team-manage/
 2. `ADMIN_PASSWORD`: 管理员初始密码，首次登录后请立即修改
 3. `DEBUG`: 生产环境请设置为 `False`
 
+### Team 席位配置
+
+可通过环境变量 `TEAM_MAX_MEMBERS_DEFAULT` 设置**新导入 Team** 的默认最大成员数（`max_members`）。已存在 Team 以数据库记录为准，可在后台编辑 Team 时单独修改。
+
 ## 📖 使用指南
 
 ### 管理员操作流程
@@ -297,12 +309,17 @@ team-manage/
    - 批量生成：设置数量和有效期
    - 生成后可复制或下载
 
-4. **查看使用记录**
+4. **TEAM 兑换（后台免兑换码上车）**
+   - 进入"控制台"页面的“TEAM 兑换”
+   - 输入用户邮箱，点击“自动兑换上车”
+   - 系统会自动选择可用兑换码并自动分配 Team；若无可用兑换码则自动生成 10 个**无过期质保**兑换码后完成兑换
+
+5. **查看使用记录**
    - 进入"使用记录"
    - 可按邮箱、兑换码、Team ID、日期范围筛选
    - 查看统计数据（总数、今日、本周、本月）
 
-5. **系统设置**
+6. **系统设置**
    - 进入"系统设置"
    - 配置代理（如需）
    - 修改管理员密码
@@ -343,6 +360,7 @@ team-manage/
 - `GET /admin/teams/import` - Team 导入页面
 - `GET /admin/codes` - 兑换码列表
 - `GET /admin/records` - 使用记录
+- `POST /admin/redeem/auto` - 管理端自动兑换（仅需邮箱，自动分配 Team；支持 Session 或 `X-API-Key`）
 
 ## 🐛 故障排除
 

@@ -71,7 +71,31 @@
 
 ---
 
-## 3. 实现建议 (Python 示例)
+## 3. 管理员自动兑换接口（免兑换码）
+
+当你希望通过程序“只提供邮箱即可完成上车”（无需自己管理/分配兑换码）时，可调用该接口。
+
+### 接口信息
+- **接口地址**: `/admin/redeem/auto`
+- **方法**: `POST`
+- **认证方式**:
+  1. **Session 认证**: 浏览器访问时自动使用。
+  2. **API Key 认证**: 对接程序建议使用此方式。在 `Header` 中添加 `X-API-Key`（配置位置同上）。
+
+### 逻辑说明
+- 系统会自动选择一个可用的 `unused` 兑换码进行兑换，并自动分配可用 Team。
+- 如果系统内没有可用兑换码，会自动批量生成 10 个**无过期质保**兑换码后继续兑换。
+
+### 请求 Payload 示例
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+---
+
+## 4. 实现建议 (Python 示例)
 
 ```python
 import httpx
@@ -82,6 +106,7 @@ app = FastAPI()
 # 这里的 API Key 需要与管理系统“系统设置”中配置的一致
 API_KEY = "YOUR_CONFIGURED_API_KEY"
 ADMIN_API_URL = "http://your-manager-domain.com/admin/teams/import"
+ADMIN_REDEEM_URL = "http://your-manager-domain.com/admin/redeem/auto"
 
 @app.post("/webhook/low-stock")
 async def handle_low_stock(request: Request):
@@ -106,6 +131,14 @@ async def handle_low_stock(request: Request):
             headers={"X-API-Key": API_KEY}
         )
         print(f"导入结果: {response.json()}")
+
+        # 可选：直接触发自动兑换（只需邮箱即可上车）
+        redeem_resp = await client.post(
+            ADMIN_REDEEM_URL,
+            json={"email": "user@example.com"},
+            headers={"X-API-Key": API_KEY}
+        )
+        print(f"自动兑换结果: {redeem_resp.json()}")
     
     return {"status": "ok"}
 ```
