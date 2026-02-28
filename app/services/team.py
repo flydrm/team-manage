@@ -15,6 +15,7 @@ from app.services.encryption import encryption_service
 from app.utils.token_parser import TokenParser
 from app.utils.jwt_parser import JWTParser
 from app.utils.time_utils import get_now
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +415,7 @@ class TeamService:
 
                 # 确定状态
                 status = "active"
-                max_members = team.max_members if 'team' in locals() and team else 5
+                max_members = settings.team_max_members_default
                 if current_members >= max_members:
                     status = "full"
                 elif expires_at and expires_at < datetime.now():

@@ -95,6 +95,7 @@ function confirmAction(message) {
 document.addEventListener('DOMContentLoaded', function () {
     // 检查认证状态
     checkAuthStatus();
+    initAdminAutoRedeem();
 });
 
 // 检查认证状态
@@ -115,6 +116,134 @@ async function checkAuthStatus() {
     } catch (error) {
         console.error('检查认证状态失败:', error);
     }
+}
+
+// === 管理端 TEAM 自动兑换 ===
+
+function initAdminAutoRedeem() {
+    const form = document.getElementById('adminAutoRedeemForm');
+    if (!form) return;
+
+    const emailInput = document.getElementById('adminAutoRedeemEmail');
+    const submitButton = document.getElementById('adminAutoRedeemBtn');
+    const resultContainer = document.getElementById('adminAutoRedeemResult');
+
+    if (!emailInput || !submitButton || !resultContainer) {
+        console.warn('admin auto redeem elements not found');
+        return;
+    }
+
+    function normalizeErrorMessage(payload, fallbackError) {
+        if (!payload) return fallbackError || '兑换失败';
+        if (typeof payload === 'string') return payload;
+
+        if (payload.error) return String(payload.error);
+
+        const detail = payload.detail;
+        if (detail) {
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                // FastAPI 422 validation errors (array of objects)
+                return detail
+                    .map((err) => (err && err.msg ? err.msg : JSON.stringify(err)))
+                    .join('; ');
+            }
+            return JSON.stringify(detail);
+        }
+
+        return fallbackError || '兑换失败';
+    }
+
+    function renderResult(success, payload, fallbackError) {
+        resultContainer.style.display = 'block';
+        resultContainer.innerHTML = '';
+
+        const box = document.createElement('div');
+        box.style.padding = '1rem';
+        box.style.borderRadius = 'var(--radius-md)';
+        box.style.border = '1px solid var(--border-base)';
+        box.style.background = success ? 'var(--success-soft)' : 'var(--danger-soft)';
+
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '0.5rem';
+        title.style.color = success ? 'var(--success)' : 'var(--danger)';
+        title.textContent = success ? '兑换成功' : '兑换失败';
+        box.appendChild(title);
+
+        const lines = [];
+        const generatedCodes = payload && payload.generated_codes ? Number(payload.generated_codes) : 0;
+
+        if (success) {
+            if (payload && payload.message) lines.push(String(payload.message));
+            if (payload && payload.used_code) lines.push(`使用兑换码: ${payload.used_code}`);
+            if (generatedCodes > 0) lines.push(`本次自动生成兑换码: ${generatedCodes}`);
+
+            const teamInfo = payload && payload.team_info ? payload.team_info : null;
+            if (teamInfo) {
+                const teamName = teamInfo.team_name || '-';
+                const teamId = teamInfo.team_id != null ? String(teamInfo.team_id) : (teamInfo.id != null ? String(teamInfo.id) : '-');
+                lines.push(`Team: ${teamName} (ID: ${teamId})`);
+                if (teamInfo.expires_at) lines.push(`到期时间: ${formatDateTime(teamInfo.expires_at)}`);
+            }
+        } else {
+            const errorMsg = normalizeErrorMessage(payload, fallbackError);
+            lines.push(errorMsg);
+            if (generatedCodes > 0) lines.push(`本次自动生成兑换码: ${generatedCodes}`);
+        }
+
+        for (const line of lines) {
+            const p = document.createElement('div');
+            p.style.fontSize = '0.875rem';
+            p.style.color = 'var(--text-main)';
+            p.textContent = line;
+            box.appendChild(p);
+        }
+
+        resultContainer.appendChild(box);
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const email = emailInput.value.trim();
+        if (!email) {
+            showToast('请输入邮箱地址', 'error');
+            return;
+        }
+
+        const originalButtonHtml = submitButton.innerHTML;
+        submitButton.disabled = true;
+        submitButton.textContent = '兑换中...';
+
+        try {
+            const response = await fetch('/admin/redeem/auto', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ email })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('兑换成功', 'success');
+                renderResult(true, data);
+            } else {
+                const errorMsg = normalizeErrorMessage(data, '兑换失败');
+                showToast(errorMsg, 'error');
+                renderResult(false, data, errorMsg);
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+            renderResult(false, null, error && error.message ? error.message : '网络错误');
+        } finally {
+            submitButton.disabled = false;
+            submitButton.innerHTML = originalButtonHtml;
+            if (window.lucide) lucide.createIcons();
+        }
+    });
 }
 
 // === 模态框控制逻辑 ===

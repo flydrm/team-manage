@@ -3,6 +3,7 @@
 使用 Pydantic Settings 管理配置
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 from pathlib import Path
 
 
@@ -41,6 +42,10 @@ class Settings(BaseSettings):
 
     # 时区配置
     timezone: str = "Asia/Shanghai"
+
+    # Team 配置
+    # 仅影响“新导入/新创建”的 Team 记录默认席位上限；已存在的数据以数据库记录为准
+    team_max_members_default: int = Field(5, ge=1, le=1000)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

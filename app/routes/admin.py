@@ -8,12 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import json
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field
+from sqlalchemy import select, update, and_, or_
+from pydantic import BaseModel, Field, EmailStr
 
 from app.database import get_db
 from app.dependencies.auth import require_admin
+from app.models import RedemptionCode
 from app.services.team import TeamService
 from app.services.redemption import RedemptionService
+from app.services.redeem_flow import redeem_flow_service
 from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,10 @@ class CodeGenerateRequest(BaseModel):
     has_warranty: bool = Field(False, description="是否为质保兑换码")
     warranty_days: int = Field(30, description="质保天数")
 
+class AutoRedeemRequest(BaseModel):
+    """管理员自动兑换请求（无需输入兑换码）"""
+    email: EmailStr = Field(..., description="用户邮箱")
+
 
 class TeamUpdateRequest(BaseModel):
     """Team 更新请求"""
@@ -82,6 +89,19 @@ class BulkCodeUpdateRequest(BaseModel):
     codes: List[str] = Field(..., description="兑换码列表")
     has_warranty: bool = Field(..., description="是否为质保兑换码")
     warranty_days: Optional[int] = Field(None, description="质保天数")
+
+
+def _should_retry_auto_redeem_error(error_message: str) -> bool:
+    if not error_message:
+        return False
+    retry_keywords = [
+        "兑换码不存在",
+        "兑换码已被使用",
+        "兑换码已过期",
+        "兑换码已被占用",
+        "兑换码记录丢失",
+    ]
+    return any(kw in error_message for kw in retry_keywords)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -146,6 +166,176 @@ async def admin_dashboard(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"加载管理员面板失败: {str(e)}"
         )
+
+
+@router.post("/redeem/auto")
+async def admin_auto_redeem(
+    redeem_data: AutoRedeemRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """
+    管理员自动兑换（无需输入兑换码）
+
+    - 自动选择一个可用的 unused 兑换码
+    - 如果没有可用兑换码，自动生成 10 个（无过期、质保）后再兑换
+    - 兑换逻辑复用用户端 redeem_flow_service（自动分配 Team）
+
+    认证方式：
+    - Session（管理员登录）
+    - 或 Header `X-API-Key`（用于自动化对接）
+    """
+    email = str(redeem_data.email).strip()
+
+    generated_codes = 0
+    last_error = "兑换失败"
+    max_attempts = 5
+
+    for attempt in range(max_attempts):
+        try:
+            # 1) 先把已过期但仍是 unused 的兑换码标记为 expired（避免“看起来有库存但实际不可用”）
+            try:
+                now = get_now()
+                await db.execute(
+                    update(RedemptionCode)
+                    .where(
+                        and_(
+                            RedemptionCode.status == "unused",
+                            RedemptionCode.expires_at.is_not(None),
+                            RedemptionCode.expires_at < now
+                        )
+                    )
+                    .values(status="expired")
+                )
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"清理过期兑换码失败: {e}")
+                await db.rollback()
+
+            # 2) 选择一个可用兑换码（unused 且未过期）
+            stmt = (
+                select(RedemptionCode.code)
+                .where(
+                    RedemptionCode.status == "unused",
+                    or_(
+                        RedemptionCode.expires_at.is_(None),
+                        RedemptionCode.expires_at > get_now()
+                    )
+                )
+                .order_by(RedemptionCode.created_at.asc())
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            code = result.scalar_one_or_none()
+
+            # 3) 若没有可用兑换码，则自动生成 10 个（无过期、质保）
+            if not code:
+                logger.info(f"管理员自动兑换：无可用兑换码，自动生成 10 个后重试 (attempt={attempt + 1}/{max_attempts})")
+                gen_result = await redemption_service.generate_code_batch(
+                    db_session=db,
+                    count=10,
+                    expires_days=None,
+                    has_warranty=True,
+                    warranty_days=30
+                )
+
+                if not gen_result.get("success"):
+                    return JSONResponse(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        content={
+                            "success": False,
+                            "message": None,
+                            "used_code": None,
+                            "generated_codes": generated_codes,
+                            "team_info": None,
+                            "error": gen_result.get("error") or "自动生成兑换码失败"
+                        }
+                    )
+
+                total_generated = int(gen_result.get("total") or 0)
+                if total_generated <= 0:
+                    return JSONResponse(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        content={
+                            "success": False,
+                            "message": None,
+                            "used_code": None,
+                            "generated_codes": generated_codes,
+                            "team_info": None,
+                            "error": "自动生成兑换码失败：未生成任何兑换码"
+                        }
+                    )
+
+                generated_codes += total_generated
+                continue
+
+            # 4) 使用选中的兑换码执行兑换（自动分配 Team）
+            logger.info(f"管理员自动兑换: email={email}, code={code} (attempt={attempt + 1}/{max_attempts})")
+            redeem_result = await redeem_flow_service.redeem_and_join_team(
+                email=email,
+                code=code,
+                team_id=None,
+                db_session=db
+            )
+
+            if redeem_result.get("success"):
+                return JSONResponse(
+                    content={
+                        "success": True,
+                        "message": redeem_result.get("message"),
+                        "used_code": code,
+                        "generated_codes": generated_codes,
+                        "team_info": redeem_result.get("team_info"),
+                        "error": None
+                    }
+                )
+
+            last_error = redeem_result.get("error") or "兑换失败"
+            if _should_retry_auto_redeem_error(last_error) and attempt < max_attempts - 1:
+                logger.warning(f"管理员自动兑换失败(可重试): {last_error} (attempt={attempt + 1}/{max_attempts})")
+                continue
+
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "success": False,
+                    "message": None,
+                    "used_code": None,
+                    "generated_codes": generated_codes,
+                    "team_info": None,
+                    "error": last_error
+                }
+            )
+
+        except Exception as e:
+            await db.rollback()
+            last_error = str(e)
+            logger.error(f"管理员自动兑换异常: {e} (attempt={attempt + 1}/{max_attempts})")
+            if attempt < max_attempts - 1:
+                continue
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "success": False,
+                    "message": None,
+                    "used_code": None,
+                    "generated_codes": generated_codes,
+                    "team_info": None,
+                    "error": f"自动兑换失败: {last_error}"
+                }
+            )
+
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "success": False,
+            "message": None,
+            "used_code": None,
+            "generated_codes": generated_codes,
+            "team_info": None,
+            "error": last_error
+        }
+    )
 
 
 @router.post("/teams/{team_id}/delete")
