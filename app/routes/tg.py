@@ -24,8 +24,10 @@ router = APIRouter(prefix="/tg", tags=["telegram"])
 # 频率限制：按命令维度区分，避免互相影响
 _rate_limit_redeem: Dict[int, float] = {}
 _rate_limit_import: Dict[int, float] = {}
+_rate_limit_status: Dict[int, float] = {}
 _REDEEM_RATE_LIMIT_SECONDS = 5.0
 _IMPORT_RATE_LIMIT_SECONDS = 10.0
+_STATUS_RATE_LIMIT_SECONDS = 5.0
 
 # 邮箱提取
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -35,6 +37,9 @@ _REDEEM_CMD_RE = re.compile(r"^/redeem(?:@[\w_]+)?(?:\s+(.+))?$", re.IGNORECASE)
 
 # /importteam 命令（支持 /importteam@botname）
 _IMPORTTEAM_CMD_RE = re.compile(r"^/importteam(?:@[\w_]+)?(?:\s+(.+))?$", re.IGNORECASE)
+
+# /status 命令（支持 /status@botname）
+_STATUS_CMD_RE = re.compile(r"^/status(?:@[\w_]+)?(?:\s+(.+))?$", re.IGNORECASE)
 
 # Access Token 提取（JWT）
 _JWT_RE = re.compile(TokenParser.JWT_PATTERN)
@@ -144,7 +149,8 @@ def _build_help_text() -> str:
     return (
         "使用方法：\n"
         "1) 自动上车：/redeem user@example.com\n"
-        "2) 补账号导入(仅私聊)：/importteam <Access Token>\n\n"
+        "2) 查看状态：/status\n"
+        "3) 补账号导入(仅私聊)：/importteam <Access Token>\n\n"
         "说明：系统会自动选择可用兑换码并自动分配 Team 完成上车；若无可用兑换码会自动生成 10 个无过期质保码后继续。"
     )
 
@@ -307,6 +313,47 @@ async def telegram_webhook(request: Request):
     if cmd in ("/start", "/help") or text.lower().startswith("/start") or text.lower().startswith("/help"):
         if bot_token:
             asyncio.create_task(send_message(bot_token, chat_id, _build_help_text(), reply_to_message_id=message_id))
+        return {"ok": True}
+
+    # /status 查看系统状态（只读）
+    if cmd == "/status" or _STATUS_CMD_RE.match(text):
+        if _rate_limited(chat_id, _rate_limit_status, _STATUS_RATE_LIMIT_SECONDS):
+            if bot_token:
+                asyncio.create_task(
+                    send_message(bot_token, chat_id, "操作太频繁，请稍后再试。", reply_to_message_id=message_id)
+                )
+            return {"ok": True}
+
+        async with AsyncSessionLocal() as db:
+            threshold_str = await settings_service.get_setting(db, "low_stock_threshold", "10")
+            webhook_url = await settings_service.get_setting(db, "webhook_url", "")
+            tg_enabled_setting = (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true"
+            tg_notify_chat_ids = await settings_service.get_setting(db, "tg_notify_chat_ids", None)
+
+            try:
+                threshold = int(threshold_str)
+            except Exception:
+                threshold = 10
+
+            available_seats = await team_service.get_total_available_seats(db)
+
+        if tg_notify_chat_ids is None:
+            notify_desc = "回退白名单" if (allowed_raw or "").strip() else "未配置"
+        else:
+            notify_desc = "已配置" if (tg_notify_chat_ids or "").strip() else "未配置"
+
+        lines = [
+            "系统状态：",
+            f"- 总可用车位: {available_seats}",
+            f"- 预警阈值: {threshold}",
+            f"- Webhook URL: {'已配置' if webhook_url else '未配置'}",
+            f"- TG 启用: {'是' if tg_enabled_setting else '否'}",
+            f"- TG 预警接收: {notify_desc}",
+        ]
+        status_text = "\n".join(lines).strip()
+
+        if bot_token:
+            asyncio.create_task(send_message(bot_token, chat_id, status_text, reply_to_message_id=message_id))
         return {"ok": True}
 
     # /redeem 邮箱（支持 entities + regex 兜底）

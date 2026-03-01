@@ -1227,6 +1227,7 @@ async def settings_page(
                 "tg_enabled": (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true",
                 "tg_bot_token": await settings_service.get_setting(db, "tg_bot_token", ""),
                 "tg_allowed_chat_ids": await settings_service.get_setting(db, "tg_allowed_chat_ids", ""),
+                "tg_notify_chat_ids": await settings_service.get_setting(db, "tg_notify_chat_ids", ""),
                 "tg_secret_token": await settings_service.get_setting(db, "tg_secret_token", ""),
             }
         )
@@ -1262,6 +1263,7 @@ class TelegramSettingsRequest(BaseModel):
     public_base_url: str = Field("", description="PUBLIC_BASE_URL，用于拼接 Webhook 回调地址")
     bot_token: str = Field("", description="Telegram Bot Token")
     allowed_chat_ids: str = Field("", description="允许的 chat_id 白名单，逗号/空格/换行分隔")
+    notify_chat_ids: str = Field("", description="库存预警通知 chat_id 列表，逗号/空格/换行分隔")
     secret_token: str = Field("", description="Telegram Webhook Secret Token（为空则自动生成）")
 
 
@@ -1445,6 +1447,7 @@ async def update_telegram_settings(
         public_base_url = _normalize_public_base_url(tg_data.public_base_url)
         bot_token = (tg_data.bot_token or "").strip()
         allowed_chat_ids_raw = (tg_data.allowed_chat_ids or "").strip()
+        notify_chat_ids_raw = (tg_data.notify_chat_ids or "").strip()
         secret_token = (tg_data.secret_token or "").strip()
 
         # 基础校验（启用时强校验；未启用时允许空值保存）
@@ -1477,6 +1480,16 @@ async def update_telegram_settings(
                     content={"success": False, "error": str(e)}
                 )
 
+        # notify_chat_ids 允许为空；非空则校验格式
+        if notify_chat_ids_raw:
+            try:
+                _ = _parse_tg_chat_ids(notify_chat_ids_raw)
+            except Exception as e:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": f"通知 Chat ID 配置错误: {str(e)}"}
+                )
+
         # secret_token 为空则自动生成，避免误配置导致所有回调 403
         if not secret_token:
             secret_token = secrets.token_urlsafe(32)
@@ -1486,6 +1499,7 @@ async def update_telegram_settings(
             "public_base_url": public_base_url,
             "tg_bot_token": bot_token,
             "tg_allowed_chat_ids": allowed_chat_ids_raw,
+            "tg_notify_chat_ids": notify_chat_ids_raw,
             "tg_secret_token": secret_token,
         }
 
@@ -1572,6 +1586,7 @@ async def sync_telegram_webhook(
             {"command": "help", "description": "查看帮助"},
             {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
             {"command": "start", "description": "开始/帮助"},
+            {"command": "status", "description": "查看系统状态：/status"},
         ]
         commands_private = [
             *commands_default,

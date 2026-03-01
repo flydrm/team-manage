@@ -133,6 +133,7 @@
             </label>
             <p class="form-help">
                 启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team；
+                <code>/status</code> 可查看系统状态；
                 私聊 Bot 发送 <code>/importteam AT</code> 可补账号导入（仅私聊）
             </p>
         </div>
@@ -156,6 +157,13 @@
             <textarea id="tgAllowedChatIds" name="allowed_chat_ids" rows="3"
                 class="form-control" placeholder="例如: 123456789&#10;-1001234567890">{{ tg_allowed_chat_ids or '' }}</textarea>
             <p class="form-help">仅白名单中的 chat_id 可使用。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tgNotifyChatIds">库存预警通知 Chat ID</label>
+            <textarea id="tgNotifyChatIds" name="notify_chat_ids" rows="3"
+                class="form-control" placeholder="例如: 123456789&#10;-1001234567890">{{ tg_notify_chat_ids or '' }}</textarea>
+            <p class="form-help">用于接收“库存不足预警”消息。留空表示关闭 TG 预警（兼容旧版本：未配置该项时会临时回退白名单）。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
         </div>
 
         <div class="form-group">
@@ -339,11 +347,12 @@
     document.getElementById('telegramForm').addEventListener('submit', async (e) => {
         e.preventDefault();
 
-        const enabled = document.getElementById('tgEnabled').checked;
-        const public_base_url = document.getElementById('publicBaseUrl').value.trim();
-        const bot_token = document.getElementById('tgBotToken').value.trim();
-        const allowed_chat_ids = document.getElementById('tgAllowedChatIds').value.trim();
-        const secret_token = document.getElementById('tgSecretToken').value.trim();
+	        const enabled = document.getElementById('tgEnabled').checked;
+	        const public_base_url = document.getElementById('publicBaseUrl').value.trim();
+	        const bot_token = document.getElementById('tgBotToken').value.trim();
+	        const allowed_chat_ids = document.getElementById('tgAllowedChatIds').value.trim();
+	        const notify_chat_ids = document.getElementById('tgNotifyChatIds').value.trim();
+	        const secret_token = document.getElementById('tgSecretToken').value.trim();
 
         if (enabled) {
             if (!bot_token) {
@@ -361,13 +370,13 @@
         }
 
         try {
-            const response = await fetch('/admin/settings/telegram', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, secret_token })
-            });
+	            const response = await fetch('/admin/settings/telegram', {
+	                method: 'POST',
+	                headers: {
+	                    'Content-Type': 'application/json'
+	                },
+	                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, notify_chat_ids, secret_token })
+	            });
 
             const data = await response.json();
 

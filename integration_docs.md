@@ -6,7 +6,8 @@
 
 当系统内所有活跃 Team 的总剩余车位（`max_members - current_members`）数量低于或等于管理员设置的阈值时，系统会向配置的 Webhook URL 发送 POST 请求。
 
-同时，如果启用了 **Telegram Bot** 并配置了 `tg_allowed_chat_ids`，系统也会向白名单 chat_id 推送一条库存预警消息（默认 10 分钟内去抖，避免重复刷屏）。
+同时，如果启用了 **Telegram Bot** 并配置了 `tg_notify_chat_ids`，系统也会向通知 chat_id 推送一条库存预警消息（默认 10 分钟内去抖，避免重复刷屏）。
+兼容说明：如果你是从旧版本升级，数据库中还没有 `tg_notify_chat_ids` 这个配置项，系统会临时回退使用 `tg_allowed_chat_ids` 作为预警接收方；建议尽快配置 `tg_notify_chat_ids`（如想关闭 TG 预警，则保存为空）。
 如果你只希望使用 Telegram 通知，也可以不配置 Webhook URL。
 
 ### 请求信息
@@ -161,6 +162,7 @@ async def handle_low_stock(request: Request):
 - **PUBLIC_BASE_URL**：你的系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
 - **Bot Token**：从 BotFather 获取
 - **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
+- **库存预警通知 Chat ID**：用于接收“库存不足预警”消息（保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用白名单；支持逗号/空格/换行分隔；群组/频道可能是负数）
 - **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
 
 #### 如何获取 Chat ID（参考）
@@ -195,7 +197,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 
 命令联想说明：
 - 同步完成后，在 Telegram 输入 `/` 会出现命令列表：
-  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`
+  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`、`/status`
   - **私聊**：除以上命令外，还会出现 `/importteam`（补账号导入）
 - 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
 
@@ -203,6 +205,11 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 在 Telegram 对 Bot 发送命令：
 ```
 /redeem user@example.com
+```
+
+查看当前库存/阈值等状态：
+```
+/status
 ```
 
 补账号导入（**仅私聊**，避免在群聊泄漏 Token）：

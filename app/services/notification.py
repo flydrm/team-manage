@@ -91,10 +91,13 @@ class NotificationService:
 
                 tg_enabled = (await settings_service.get_setting(db_session, "tg_enabled", "false") or "false").lower() == "true"
                 tg_bot_token = await settings_service.get_setting(db_session, "tg_bot_token", "")
-                tg_allowed_chat_ids_raw = await settings_service.get_setting(db_session, "tg_allowed_chat_ids", "")
+                tg_notify_chat_ids_raw = await settings_service.get_setting(db_session, "tg_notify_chat_ids", None)
+                # 兼容旧版本：未配置 tg_notify_chat_ids 时，回退使用 tg_allowed_chat_ids
+                if tg_notify_chat_ids_raw is None:
+                    tg_notify_chat_ids_raw = await settings_service.get_setting(db_session, "tg_allowed_chat_ids", "")
 
                 # 若既没有 Webhook URL，也没有 TG 通知配置，则无需检查
-                has_tg_notify = bool(tg_enabled and tg_bot_token and tg_allowed_chat_ids_raw.strip())
+                has_tg_notify = bool(tg_enabled and tg_bot_token and (tg_notify_chat_ids_raw or "").strip())
                 if not webhook_url and not has_tg_notify:
                     return False
 
@@ -125,7 +128,7 @@ class NotificationService:
                             self._tg_low_stock_last_sent_at is None
                             or now - self._tg_low_stock_last_sent_at >= self._tg_low_stock_cooldown_seconds
                         ):
-                            chat_ids = _parse_chat_ids(tg_allowed_chat_ids_raw)
+                            chat_ids = _parse_chat_ids(tg_notify_chat_ids_raw)
                             if chat_ids:
                                 tg_ok = await self._send_tg_low_stock_notification(
                                     tg_bot_token, chat_ids, available_seats, threshold
