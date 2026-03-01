@@ -232,6 +232,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 - 兑换结果
 - 使用的兑换码 `used_code`（注意：会暴露兑换码）
 - 分配的 Team 信息（若兑换成功）
+- 兑换成功后会返回“当前总可用车位”（方便判断库存是否充足）
 - 系统会写入使用记录来源 `source=tg`，并落库 `tg_chat_id`（仅数字 ID），便于在后台“使用记录”按来源/Chat ID 查询
 
 说明：

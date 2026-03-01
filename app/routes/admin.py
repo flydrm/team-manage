@@ -213,17 +213,20 @@ async def admin_auto_redeem(
 @router.get("/redeem", response_class=HTMLResponse)
 async def redeem_page(
     request: Request,
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
     """TEAM 兑换页面（免兑换码上车）"""
     try:
         from app.main import templates
+        available_seats = await team_service.get_total_available_seats(db)
         return templates.TemplateResponse(
             "admin/redeem/index.html",
             {
                 "request": request,
                 "user": current_user,
                 "active_page": "redeem",
+                "available_seats": int(available_seats),
             }
         )
     except Exception as e:

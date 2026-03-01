@@ -389,6 +389,11 @@ def _format_redeem_result(result: Dict[str, Any]) -> str:
             lines.append(f"👥 Team: {team_name or '-'} (ID: {team_id if team_id is not None else '-'})")
         if team_info.get("expires_at"):
             lines.append(f"📅 到期时间: {_format_iso_dt(team_info.get('expires_at'))}")
+        if result.get("available_seats") is not None:
+            try:
+                lines.append(f"📦 当前总可用车位: {int(result.get('available_seats'))}")
+            except Exception:
+                pass
         return "\n".join(lines).strip()
 
     return _friendly_redeem_error(result.get("error") or "")
@@ -425,6 +430,11 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
                 return
 
             result = await auto_redeem_by_email(email, db, source="tg", tg_chat_id=chat_id)
+            if result.get("success"):
+                try:
+                    result["available_seats"] = int(await team_service.get_total_available_seats(db))
+                except Exception:
+                    pass
             text = _format_redeem_result(result)
             await send_message(bot_token, chat_id, text, reply_to_message_id=reply_to_message_id)
         except Exception as e:

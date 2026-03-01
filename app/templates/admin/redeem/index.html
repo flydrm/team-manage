@@ -5,6 +5,13 @@
 {% block content %}
 <div class="page-header">
     <h2>TEAM 兑换</h2>
+    <div style="margin-top: 0.5rem;">
+        {% if (available_seats|int) <= 0 %}
+            <span class="status-badge status-danger">📦 当前总可用车位：{{ available_seats }}</span>
+        {% else %}
+            <span class="status-badge status-info">📦 当前总可用车位：{{ available_seats }}</span>
+        {% endif %}
+    </div>
 </div>
 
 <div class="content-section">
