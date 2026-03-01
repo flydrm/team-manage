@@ -39,13 +39,28 @@
     </div>
 </div>
 
+{% if source_counts %}
+<div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0 1.5rem 0;">
+    <span class="status-badge status-info">用户端 {{ source_counts.get('user', 0) }}</span>
+    <span class="status-badge status-warning">管理端 {{ source_counts.get('admin', 0) }}</span>
+    <span class="status-badge status-active">Telegram {{ source_counts.get('tg', 0) }}</span>
+</div>
+{% endif %}
+
 <!-- 搜索和筛选 -->
 <div class="content-section">
     <div class="section-header">
         <h3><i data-lucide="search"></i> 搜索筛选</h3>
+        <div class="filter-tabs">
+            <button type="button" onclick="setSourceFilter('')" class="filter-tab {% if not filters.source %}active{% endif %}">全部</button>
+            <button type="button" onclick="setSourceFilter('user')" class="filter-tab {% if filters.source=='user' %}active{% endif %}">用户端</button>
+            <button type="button" onclick="setSourceFilter('admin')" class="filter-tab {% if filters.source=='admin' %}active{% endif %}">管理端</button>
+            <button type="button" onclick="setSourceFilter('tg')" class="filter-tab {% if filters.source=='tg' %}active{% endif %}">Telegram</button>
+        </div>
     </div>
 
     <form method="get" action="/admin/records" class="search-form-grid">
+        <input type="hidden" id="source" name="source" value="{{ filters.source or '' }}">
         <div class="form-group">
             <label for="email">用户邮箱</label>
             <input type="text" id="email" name="email" value="{{ filters.email or '' }}" placeholder="输入邮箱搜索"
@@ -61,6 +76,11 @@
             <input type="number" id="team_id" name="team_id" value="{{ filters.team_id or '' }}" placeholder="输入Team ID"
                 class="form-control">
         </div>
+        <div class="form-group" id="tgChatIdGroup">
+            <label for="tg_chat_id">TG Chat ID</label>
+            <input type="text" id="tg_chat_id" name="tg_chat_id" value="{{ filters.tg_chat_id or '' }}"
+                placeholder="仅 Telegram 来源可用" class="form-control">
+        </div>
         <div class="form-group">
             <label for="start_date">开始日期</label>
             <input type="date" id="start_date" name="start_date" value="{{ filters.start_date or '' }}"
@@ -74,7 +94,7 @@
             <button type="submit" class="btn btn-primary" style="flex: 1;">
                 <i data-lucide="search" style="width: 16px; height: 16px;"></i> 搜索
             </button>
-            <a href="/admin/records" class="btn btn-secondary">
+            <a href="/admin/records" class="btn btn-secondary" onclick="clearRecordFilters(event)">
                 <i data-lucide="rotate-ccw" style="width: 16px; height: 16px;"></i> 重置
             </a>
         </div>
@@ -89,6 +109,25 @@
             <span class="badge badge-info">{{ pagination.total }} 条记录</span>
         </div>
         <div class="header-group">
+            {% set export_params = [] %}
+            {% if filters.email %}{% set _ = export_params.append('email=' + filters.email|urlencode) %}{% endif %}
+            {% if filters.code %}{% set _ = export_params.append('code=' + filters.code|urlencode) %}{% endif %}
+            {% if filters.team_id %}{% set _ = export_params.append('team_id=' + filters.team_id|string|urlencode) %}{% endif %}
+            {% if filters.source %}{% set _ = export_params.append('source=' + filters.source|urlencode) %}{% endif %}
+            {% if filters.tg_chat_id %}{% set _ = export_params.append('tg_chat_id=' + filters.tg_chat_id|string|urlencode) %}{% endif %}
+            {% if filters.start_date %}{% set _ = export_params.append('start_date=' + filters.start_date) %}{% endif %}
+            {% if filters.end_date %}{% set _ = export_params.append('end_date=' + filters.end_date) %}{% endif %}
+            {% set export_query = '?' + export_params|join('&') if export_params else '' %}
+
+            <div class="dropdown-wrapper">
+                <button class="btn btn-secondary dropdown-toggle" onclick="toggleDropdown('recordsExportDropdown')">
+                    <i data-lucide="download" style="width: 16px; height: 16px;"></i> 导出
+                </button>
+                <div id="recordsExportDropdown" class="dropdown-menu">
+                    <a class="dropdown-item" href="/admin/records/export.csv{{ export_query }}">CSV</a>
+                    <a class="dropdown-item" href="/admin/records/export.json{{ export_query }}">JSON (NDJSON)</a>
+                </div>
+            </div>
             <div class="dropdown-wrapper">
                 <button class="btn btn-secondary dropdown-toggle" onclick="toggleDropdown('columnToggleDropdown')">
                     <i data-lucide="columns" style="width: 16px; height: 16px;"></i> 列设置
@@ -111,6 +150,8 @@
                     <th>Team名称</th>
                     <th>Team ID</th>
                     <th>Account ID</th>
+                    <th>来源</th>
+                    <th>TG Chat ID</th>
                     <th style="text-align: right;">兑换时间</th>
                     <th style="text-align: right;">操作</th>
                 </tr>
@@ -124,6 +165,28 @@
                     <td>{{ record.team_name or '-' }}</td>
                     <td><span class="badge badge-secondary">{{ record.team_id }}</span></td>
                     <td><code class="account-id" title="{{ record.account_id }}">{{ record.account_id[:8] }}...</code>
+                    </td>
+                    <td>
+                        {% if record.source == 'tg' %}
+                        <span class="status-badge status-active">Telegram</span>
+                        {% elif record.source == 'admin' %}
+                        <span class="status-badge status-warning">管理端</span>
+                        {% else %}
+                        <span class="status-badge status-info">用户端</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if record.source == 'tg' and record.tg_chat_id %}
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <code>{{ record.tg_chat_id }}</code>
+                            <button type="button" class="btn btn-xs btn-icon btn-minimal btn-secondary"
+                                title="复制 chat_id" onclick="copyText('{{ record.tg_chat_id }}')">
+                                <i data-lucide="copy" style="width: 14px; height: 14px;"></i>
+                            </button>
+                        </div>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
                     </td>
                     <td style="text-align: right;">{{ record.redeemed_at }}</td>
                     <td style="text-align: right;">
@@ -156,6 +219,8 @@
         {% if filters.code %}{% set _ = query_params.append('code=' + filters.code|urlencode) %}{% endif %}
         {% if filters.team_id %}{% set _ = query_params.append('team_id=' + filters.team_id|string|urlencode) %}{% endif
         %}
+        {% if filters.source %}{% set _ = query_params.append('source=' + filters.source|urlencode) %}{% endif %}
+        {% if filters.tg_chat_id %}{% set _ = query_params.append('tg_chat_id=' + filters.tg_chat_id|string|urlencode) %}{% endif %}
         {% if filters.start_date %}{% set _ = query_params.append('start_date=' + filters.start_date) %}{% endif %}
         {% if filters.end_date %}{% set _ = query_params.append('end_date=' + filters.end_date) %}{% endif %}
         {% if pagination.per_page != 20 %}{% set _ = query_params.append('per_page=' + pagination.per_page|string) %}{%
@@ -264,6 +329,54 @@
 
 {% block extra_js %}
 <script>
+    function normalizeSource(value) {
+        const v = (value || '').toString().trim().toLowerCase();
+        if (v === 'user' || v === 'admin' || v === 'tg') return v;
+        return '';
+    }
+
+    function setSourceFilter(source) {
+        const src = normalizeSource(source);
+        const qs = new URLSearchParams(window.location.search);
+
+        if (src) {
+            qs.set('source', src);
+            localStorage.setItem('records_last_source', src);
+        } else {
+            qs.delete('source');
+            localStorage.removeItem('records_last_source');
+        }
+
+        qs.set('page', '1');
+
+        if (src !== 'tg') {
+            qs.delete('tg_chat_id');
+            localStorage.removeItem('records_last_tg_chat_id');
+        }
+
+        window.location.search = qs.toString();
+    }
+
+    function clearRecordFilters(event) {
+        if (event) event.preventDefault();
+        localStorage.removeItem('records_last_source');
+        localStorage.removeItem('records_last_tg_chat_id');
+        window.location.href = '/admin/records';
+    }
+
+    async function copyText(text) {
+        const t = (text || '').toString();
+        if (!t) return;
+        try {
+            await navigator.clipboard.writeText(t);
+            showToast('已复制', 'success');
+        } catch (e) {
+            try {
+                prompt('复制内容：', t);
+            } catch (_) { }
+        }
+    }
+
     async function withdrawRecord(recordId, email) {
         if (!confirm(`确定要撤回针对 ${email} 的兑换记录吗？\n\n这将执行以下操作：\n1. 在 ChatGPT Team 中撤回邀请或删除成员\n2. 恢复对应的兑换码为“未使用”状态\n3. 删除此条使用记录`)) {
             return;
@@ -309,7 +422,76 @@
     document.addEventListener('DOMContentLoaded', () => {
         // Init Column Toggler
         initColumnToggler('.data-table', 'records_list_columns');
+        initRecordsFilters();
     });
+
+    function initRecordsFilters() {
+        const qs = new URLSearchParams(window.location.search);
+        const explicitSource = qs.has('source');
+        const explicitChat = qs.has('tg_chat_id');
+
+        const currentSource = normalizeSource(qs.get('source') || '');
+        const storedSource = normalizeSource(localStorage.getItem('records_last_source') || '');
+
+        const targetSource = currentSource || (!explicitSource ? storedSource : '');
+
+        const newQs = new URLSearchParams(qs.toString());
+        let changed = false;
+
+        if (!explicitSource && targetSource) {
+            newQs.set('source', targetSource);
+            newQs.set('page', '1');
+            changed = true;
+        }
+
+        if (targetSource === 'tg') {
+            const currentChat = (qs.get('tg_chat_id') || '').trim();
+            const storedChat = (localStorage.getItem('records_last_tg_chat_id') || '').trim();
+            if (!explicitChat && !currentChat && storedChat) {
+                newQs.set('tg_chat_id', storedChat);
+                newQs.set('page', '1');
+                changed = true;
+            }
+        } else {
+            if (newQs.has('tg_chat_id')) {
+                newQs.delete('tg_chat_id');
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            window.location.search = newQs.toString();
+            return;
+        }
+
+        if (currentSource) localStorage.setItem('records_last_source', currentSource);
+        else localStorage.removeItem('records_last_source');
+
+        if (currentSource === 'tg') {
+            const currentChat = (qs.get('tg_chat_id') || '').trim();
+            if (currentChat) localStorage.setItem('records_last_tg_chat_id', currentChat);
+        }
+
+        const tgGroup = document.getElementById('tgChatIdGroup');
+        const tgInput = document.getElementById('tg_chat_id');
+        if (tgGroup && tgInput) {
+            if (currentSource === 'tg') {
+                tgGroup.style.display = '';
+                tgInput.disabled = false;
+            } else {
+                tgGroup.style.display = 'none';
+                tgInput.disabled = true;
+                tgInput.value = '';
+            }
+
+            tgInput.addEventListener('input', () => {
+                if (currentSource !== 'tg') return;
+                const v = (tgInput.value || '').trim();
+                if (v) localStorage.setItem('records_last_tg_chat_id', v);
+                else localStorage.removeItem('records_last_tg_chat_id');
+            });
+        }
+    }
 
     // Column Toggler Logic & Pagination
     function initColumnToggler(tableSelector, storageKey) {

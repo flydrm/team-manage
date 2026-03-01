@@ -41,8 +41,10 @@ git pull && docker compose down && docker compose up -d --build
 
 - **使用记录查询**
   - 多维度筛选（邮箱、兑换码、Team ID、日期范围）
+  - 支持按来源筛选（用户端/管理端/Telegram），Telegram 记录支持按 `chat_id` 精准查询
   - 分页展示（每页20条记录）
   - 统计数据（总数、今日、本周、本月）
+  - 支持按当前筛选条件导出 CSV / NDJSON
 
 - **系统设置**
   - 代理配置（HTTP/SOCKS5）
@@ -134,7 +136,7 @@ APP_PORT=8008
 DEBUG=True
 
 # 数据库配置（默认使用 SQLite）
-DATABASE_URL=sqlite+aiosqlite:///team_manage.db
+DATABASE_URL=sqlite+aiosqlite:///./data/team_manage.db
 
 # 安全配置（生产环境请修改）
 SECRET_KEY=your-secret-key-here-change-in-production
@@ -205,7 +207,7 @@ docker compose up -d
 
 ### 3. 数据持久化
 
-Docker 配置中已自动将宿主机的 `team_manage.db` 文件映射到容器内部，因此你的数据会自动保存在项目根目录下，容器删除后数据依然存在。
+Docker Compose 使用名为 `team-manage-data` 的 volume 挂载到容器内的 `/app/data`，数据库文件为 `/app/data/team_manage.db`，即使删除容器数据也会保留（除非显式删除 volume）。
 
 ### 4. 常用命令
 
@@ -350,6 +352,8 @@ team-manage/
 - `POST /admin/teams/import` - Team 导入
 - `GET /admin/codes` - 兑换码列表
 - `GET /admin/records` - 使用记录
+- `GET /admin/records/export.csv` - 导出使用记录（CSV，支持筛选参数）
+- `GET /admin/records/export.json` - 导出使用记录（NDJSON，支持筛选参数）
 - `POST /admin/redeem/auto` - 管理端自动兑换（仅需邮箱，自动分配 Team；支持 Session 或 `X-API-Key`）
 
 ## 🐛 故障排除
@@ -357,11 +361,16 @@ team-manage/
 ### 数据库初始化失败
 
 ```bash
-# 删除旧数据库文件
-rm team_manage.db
+# 本地开发默认数据库路径（见 .env.example）
+rm -f ./data/team_manage.db
 
 # 重新初始化
-python init_db.py
+python3 init_db.py
+```
+
+如果你使用 Docker 部署并希望清空数据（会删除所有数据，请谨慎操作）：
+```bash
+docker compose down -v
 ```
 
 ### 无法访问 ChatGPT API

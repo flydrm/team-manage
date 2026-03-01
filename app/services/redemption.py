@@ -5,9 +5,9 @@
 import logging
 import secrets
 import string
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, AsyncIterator
 from datetime import datetime, timedelta
-from sqlalchemy import select, update, delete, and_, or_, func
+from sqlalchemy import select, update, delete, and_, or_, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,7 @@ from app.models import RedemptionCode, RedemptionRecord, Team
 from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
+_WARNED_UNKNOWN_RECORD_SOURCES: set[str] = set()
 
 
 class RedemptionService:
@@ -23,6 +24,46 @@ class RedemptionService:
     def __init__(self):
         """初始化兑换码管理服务"""
         pass
+
+    def _normalize_record_source(self, source: Optional[str]) -> Optional[str]:
+        s = (source or "").strip().lower()
+        if not s:
+            return None
+        return s if s in {"user", "admin", "tg"} else None
+
+    def _safe_int(self, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            s = str(value).strip()
+            if not s:
+                return None
+            return int(s)
+        except Exception:
+            return None
+
+    def _parse_yyyy_mm_dd(self, value: Optional[str]) -> Optional[datetime]:
+        s = (value or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except Exception:
+            return None
+
+    def _clamp_per_page(self, per_page: Any, *, default: int = 20, min_value: int = 1, max_value: int = 200) -> int:
+        n = self._safe_int(per_page)
+        if n is None:
+            return default
+        if n < min_value:
+            return min_value
+        if n > max_value:
+            return max_value
+        return n
 
     def _generate_random_code(self, length: int = 16) -> str:
         """
@@ -46,6 +87,271 @@ class RedemptionService:
             code = f"{code[0:4]}-{code[4:8]}-{code[8:12]}-{code[12:16]}"
 
         return code
+
+    async def get_records_page(
+        self,
+        db_session: AsyncSession,
+        *,
+        email: Optional[str] = None,
+        code: Optional[str] = None,
+        team_id: Optional[int] = None,
+        source: Optional[str] = None,
+        tg_chat_id: Optional[Any] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        page: Any = 1,
+        per_page: Any = 20,
+    ) -> Dict[str, Any]:
+        """
+        获取使用记录（分页 + DB 过滤 + 统计 + 来源分布）
+        """
+        try:
+            email_norm = (email or "").strip() or None
+            code_norm = (code or "").strip() or None
+            team_id_int = self._safe_int(team_id)
+            page_int = self._safe_int(page) or 1
+            per_page_int = self._clamp_per_page(per_page, default=20, max_value=200)
+            source_norm = self._normalize_record_source(source)
+            tg_chat_id_int = self._safe_int(tg_chat_id)
+            if source_norm != "tg":
+                tg_chat_id_int = None
+
+            start_dt = self._parse_yyyy_mm_dd(start_date)
+            end_dt = self._parse_yyyy_mm_dd(end_date)
+            end_dt_exclusive = (end_dt + timedelta(days=1)) if end_dt else None
+
+            common_filters = []
+            if email_norm:
+                common_filters.append(RedemptionRecord.email.ilike(f"%{email_norm}%"))
+            if code_norm:
+                common_filters.append(RedemptionRecord.code.ilike(f"%{code_norm}%"))
+            if team_id_int is not None:
+                common_filters.append(RedemptionRecord.team_id == team_id_int)
+            if start_dt:
+                common_filters.append(RedemptionRecord.redeemed_at >= start_dt)
+            if end_dt_exclusive:
+                common_filters.append(RedemptionRecord.redeemed_at < end_dt_exclusive)
+
+            source_filters = []
+            if source_norm:
+                if source_norm == "user":
+                    source_filters.append(or_(RedemptionRecord.source.is_(None), RedemptionRecord.source == "user"))
+                else:
+                    source_filters.append(RedemptionRecord.source == source_norm)
+
+                if source_norm == "tg" and tg_chat_id_int is not None:
+                    source_filters.append(RedemptionRecord.tg_chat_id == tg_chat_id_int)
+
+            all_filters = [*common_filters, *source_filters]
+
+            # 统计：total/today/this_week/this_month（同当前筛选条件）
+            now = get_now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            week_start = today_start - timedelta(days=today_start.weekday())
+            month_start = today_start.replace(day=1)
+
+            stats_stmt = select(
+                func.count(RedemptionRecord.id).label("total"),
+                func.sum(case((RedemptionRecord.redeemed_at >= today_start, 1), else_=0)).label("today"),
+                func.sum(case((RedemptionRecord.redeemed_at >= week_start, 1), else_=0)).label("this_week"),
+                func.sum(case((RedemptionRecord.redeemed_at >= month_start, 1), else_=0)).label("this_month"),
+            )
+            if all_filters:
+                stats_stmt = stats_stmt.where(and_(*all_filters))
+            stats_row = (await db_session.execute(stats_stmt)).one()
+            total = int(stats_row.total or 0)
+
+            stats = {
+                "total": total,
+                "today": int(stats_row.today or 0),
+                "this_week": int(stats_row.this_week or 0),
+                "this_month": int(stats_row.this_month or 0),
+            }
+
+            # 来源分布：应用通用过滤，但不应用 source/tg_chat_id 过滤
+            source_group = func.coalesce(RedemptionRecord.source, "user")
+            source_stmt = select(source_group.label("source"), func.count(RedemptionRecord.id).label("count")).group_by(source_group)
+            if common_filters:
+                source_stmt = source_stmt.where(and_(*common_filters))
+            source_rows = (await db_session.execute(source_stmt)).all()
+            source_counts: Dict[str, int] = {"user": 0, "admin": 0, "tg": 0}
+            for s, c in source_rows:
+                s_norm = str(s or "").strip().lower() or "user"
+                # 保持与列表展示一致：未知来源按 user 统计，避免 badges 与记录数不一致
+                if s_norm not in {"user", "admin", "tg"}:
+                    s_norm = "user"
+                source_counts[s_norm] += int(c or 0)
+
+            # 分页
+            import math
+            total_pages = math.ceil(total / per_page_int) if total > 0 else 1
+            if page_int < 1:
+                page_int = 1
+            if total_pages > 0 and page_int > total_pages:
+                page_int = total_pages
+            offset = (page_int - 1) * per_page_int
+
+            # 查询数据（join Team 获取 team_name）
+            stmt = (
+                select(RedemptionRecord, Team.team_name)
+                .join(Team, Team.id == RedemptionRecord.team_id, isouter=True)
+                .order_by(RedemptionRecord.redeemed_at.desc(), RedemptionRecord.id.desc())
+            )
+            if all_filters:
+                stmt = stmt.where(and_(*all_filters))
+            stmt = stmt.limit(per_page_int).offset(offset)
+            rows = (await db_session.execute(stmt)).all()
+
+            record_list = []
+            for record, team_name in rows:
+                raw_source = (record.source or "").strip()
+                source_val = raw_source.lower() or "user"
+                if source_val not in {"user", "admin", "tg"}:
+                    if raw_source and raw_source not in _WARNED_UNKNOWN_RECORD_SOURCES:
+                        _WARNED_UNKNOWN_RECORD_SOURCES.add(raw_source)
+                        logger.warning(f"发现未知 RedemptionRecord.source 值，已按 user 处理: {raw_source!r}")
+                    source_val = "user"
+
+                record_list.append(
+                    {
+                        "id": record.id,
+                        "email": record.email,
+                        "code": record.code,
+                        "team_id": record.team_id,
+                        "team_name": team_name,
+                        "account_id": record.account_id,
+                        "redeemed_at": record.redeemed_at.strftime("%Y-%m-%d %H:%M:%S") if record.redeemed_at else None,
+                        "is_warranty_redemption": bool(record.is_warranty_redemption),
+                        "source": source_val,
+                        "tg_chat_id": record.tg_chat_id,
+                    }
+                )
+
+            return {
+                "success": True,
+                "records": record_list,
+                "stats": stats,
+                "source_counts": source_counts,
+                "pagination": {
+                    "current_page": page_int,
+                    "total_pages": total_pages,
+                    "total": total,
+                    "per_page": per_page_int,
+                },
+                "error": None,
+            }
+
+        except Exception as e:
+            logger.error(f"获取使用记录分页失败: {e}")
+            return {
+                "success": False,
+                "records": [],
+                "stats": {"total": 0, "today": 0, "this_week": 0, "this_month": 0},
+                "source_counts": {"user": 0, "admin": 0, "tg": 0},
+                "pagination": {"current_page": 1, "total_pages": 1, "total": 0, "per_page": 20},
+                "error": f"获取使用记录失败: {str(e)}",
+            }
+
+    async def iter_records_for_export(
+        self,
+        db_session: AsyncSession,
+        *,
+        email: Optional[str] = None,
+        code: Optional[str] = None,
+        team_id: Optional[int] = None,
+        source: Optional[str] = None,
+        tg_chat_id: Optional[Any] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        chunk_size: int = 1000,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        email_norm = (email or "").strip() or None
+        code_norm = (code or "").strip() or None
+        team_id_int = self._safe_int(team_id)
+        source_norm = self._normalize_record_source(source)
+        tg_chat_id_int = self._safe_int(tg_chat_id)
+        if source_norm != "tg":
+            tg_chat_id_int = None
+
+        start_dt = self._parse_yyyy_mm_dd(start_date)
+        end_dt = self._parse_yyyy_mm_dd(end_date)
+        end_dt_exclusive = (end_dt + timedelta(days=1)) if end_dt else None
+
+        filters = []
+        if email_norm:
+            filters.append(RedemptionRecord.email.ilike(f"%{email_norm}%"))
+        if code_norm:
+            filters.append(RedemptionRecord.code.ilike(f"%{code_norm}%"))
+        if team_id_int is not None:
+            filters.append(RedemptionRecord.team_id == team_id_int)
+        if start_dt:
+            filters.append(RedemptionRecord.redeemed_at >= start_dt)
+        if end_dt_exclusive:
+            filters.append(RedemptionRecord.redeemed_at < end_dt_exclusive)
+
+        if source_norm:
+            if source_norm == "user":
+                filters.append(or_(RedemptionRecord.source.is_(None), RedemptionRecord.source == "user"))
+            else:
+                filters.append(RedemptionRecord.source == source_norm)
+            if source_norm == "tg" and tg_chat_id_int is not None:
+                filters.append(RedemptionRecord.tg_chat_id == tg_chat_id_int)
+
+        last_redeemed_at: Optional[datetime] = None
+        last_id: Optional[int] = None
+
+        while True:
+            stmt = (
+                select(RedemptionRecord, Team.team_name)
+                .join(Team, Team.id == RedemptionRecord.team_id, isouter=True)
+                .order_by(RedemptionRecord.redeemed_at.desc(), RedemptionRecord.id.desc())
+                .limit(chunk_size)
+            )
+            where_filters = list(filters)
+            if last_id is not None:
+                # redeemed_at 允许为空（历史/异常数据）。若最后一条 redeemed_at 为 NULL，必须退化为按 id 分页，
+                # 否则会重复拉取同一批数据导致导出死循环。
+                if last_redeemed_at is None:
+                    where_filters.append(
+                        and_(RedemptionRecord.redeemed_at.is_(None), RedemptionRecord.id < last_id)
+                    )
+                else:
+                    # redeemed_at 降序（NULL 通常排在最后），先走常规 keyset，再把 NULL 行纳入后续分页
+                    where_filters.append(
+                        or_(
+                            RedemptionRecord.redeemed_at < last_redeemed_at,
+                            and_(RedemptionRecord.redeemed_at == last_redeemed_at, RedemptionRecord.id < last_id),
+                            RedemptionRecord.redeemed_at.is_(None),
+                        )
+                    )
+            if where_filters:
+                stmt = stmt.where(and_(*where_filters))
+
+            rows = (await db_session.execute(stmt)).all()
+            if not rows:
+                break
+
+            for record, team_name in rows:
+                source_val = (record.source or "user").strip().lower()
+                if source_val not in {"user", "admin", "tg"}:
+                    source_val = "user"
+
+                yield {
+                    "id": record.id,
+                    "email": record.email,
+                    "code": record.code,
+                    "team_id": record.team_id,
+                    "team_name": team_name,
+                    "account_id": record.account_id,
+                    "redeemed_at": record.redeemed_at.isoformat() if record.redeemed_at else None,
+                    "is_warranty_redemption": bool(record.is_warranty_redemption),
+                    "source": source_val,
+                    "tg_chat_id": record.tg_chat_id,
+                }
+
+            last_record, _ = rows[-1]
+            last_redeemed_at = last_record.redeemed_at
+            last_id = last_record.id
 
     async def generate_code_single(
         self,

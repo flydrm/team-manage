@@ -174,7 +174,10 @@ class RedeemFlowService:
         email: str,
         code: str,
         team_id: Optional[int],
-        db_session: AsyncSession
+        db_session: AsyncSession,
+        *,
+        source: str = "user",
+        tg_chat_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         完整的兑换流程 (带事务和并发控制)
@@ -330,12 +333,24 @@ class RedeemFlowService:
                         await db_session.rollback()
                         
                     async with db_session.begin():
+                        source_norm = str(source or "").strip().lower()
+                        if source_norm not in {"user", "admin", "tg"}:
+                            source_norm = "user"
+                        tg_chat_id_value = None
+                        if source_norm == "tg" and tg_chat_id is not None:
+                            try:
+                                tg_chat_id_value = int(tg_chat_id)
+                            except Exception:
+                                tg_chat_id_value = None
+
                         redemption_record = RedemptionRecord(
                             email=email,
                             code=code,
                             team_id=team_id_final,
                             account_id=final_team_account_id,
-                            is_warranty_redemption=final_is_warranty
+                            is_warranty_redemption=final_is_warranty,
+                            source=source_norm,
+                            tg_chat_id=tg_chat_id_value,
                         )
                         db_session.add(redemption_record)
                     

@@ -99,6 +99,8 @@ class RedemptionRecord(Base):
     account_id = Column(String(100), nullable=False, comment="Account ID")
     redeemed_at = Column(DateTime, default=get_now, comment="兑换时间")
     is_warranty_redemption = Column(Boolean, default=False, comment="是否为质保兑换")
+    source = Column(String(16), default="user", comment="来源: user/admin/tg")
+    tg_chat_id = Column(Integer, comment="TG chat_id (仅 source=tg)")
 
     # 关系
     team = relationship("Team", back_populates="redemption_records")
@@ -107,6 +109,10 @@ class RedemptionRecord(Base):
     # 索引
     __table_args__ = (
         Index("idx_email", "email"),
+        Index("idx_redemption_records_source", "source"),
+        Index("idx_redemption_records_redeemed_at", "redeemed_at"),
+        Index("idx_redemption_records_source_redeemed_at", "source", "redeemed_at"),
+        Index("idx_redemption_records_tg_chat_id_redeemed_at", "tg_chat_id", "redeemed_at"),
     )
 
 

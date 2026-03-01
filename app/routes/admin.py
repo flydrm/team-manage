@@ -14,7 +14,7 @@ from sqlalchemy import select, update, and_, or_
 from pydantic import BaseModel, Field, EmailStr
 from pydantic import ValidationError
 
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.dependencies.auth import require_admin
 from app.models import RedemptionCode
 from app.services.team import TeamService
@@ -197,7 +197,7 @@ async def admin_auto_redeem(
         return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": ve.errors()})
 
     email = str(redeem_data.email).strip()
-    result = await auto_redeem_by_email(email, db)
+    result = await auto_redeem_by_email(email, db, source="admin")
 
     if result.get("success"):
         return JSONResponse(content=result)
@@ -980,6 +980,8 @@ async def records_page(
     email: Optional[str] = None,
     code: Optional[str] = None,
     team_id: Optional[str] = None,
+    source: Optional[str] = None,
+    tg_chat_id: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     page: Optional[str] = "1",
@@ -1007,110 +1009,25 @@ async def records_page(
     """
     try:
         from app.main import templates
-        from datetime import datetime, timedelta
-        import math
+        logger.info(f"管理员访问使用记录页面 (page={page}, per_page={per_page})")
 
-        # 解析参数
-        try:
-            actual_team_id = int(team_id) if team_id and team_id.strip() else None
-        except (ValueError, TypeError):
-            actual_team_id = None
-            
-        try:
-            page_int = int(page) if page and page.strip() else 1
-        except (ValueError, TypeError):
-            page_int = 1
-            
-        logger.info(f"管理员访问使用记录页面 (page={page_int}, per_page={per_page})")
-
-        # 获取记录 (支持邮箱、兑换码、Team ID 筛选)
-        records_result = await redemption_service.get_all_records(
-            db, 
-            email=email, 
-            code=code, 
-            team_id=actual_team_id
+        records_result = await redemption_service.get_records_page(
+            db,
+            email=email,
+            code=code,
+            team_id=team_id,
+            source=source,
+            tg_chat_id=tg_chat_id,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            per_page=per_page,
         )
-        all_records = records_result.get("records", [])
-
-        # 仅由于日期范围筛选目前还在内存中处理，如果未来记录数极大可以移至数据库
-        filtered_records = []
-        for record in all_records:
-            # 日期范围筛选
-            if start_date or end_date:
-                try:
-                    record_date = datetime.fromisoformat(record["redeemed_at"]).date()
-
-                    if start_date:
-                        start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        if record_date < start:
-                            continue
-
-                    if end_date:
-                        end = datetime.strptime(end_date, "%Y-%m-%d").date()
-                        if record_date > end:
-                            continue
-                except:
-                    pass
-
-            filtered_records.append(record)
-
-        # 获取Team信息并关联到记录
-        teams_result = await team_service.get_all_teams(db)
-        teams = teams_result.get("teams", [])
-        team_map = {team["id"]: team for team in teams}
-
-        # 为记录添加Team名称
-        for record in filtered_records:
-            team = team_map.get(record["team_id"])
-            record["team_name"] = team["team_name"] if team else None
-
-        # 计算统计数据
-        now = get_now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=today_start.weekday())
-        month_start = today_start.replace(day=1)
-
-        stats = {
-            "total": len(filtered_records),
-            "today": 0,
-            "this_week": 0,
-            "this_month": 0
-        }
-
-        for record in filtered_records:
-            try:
-                record_time = datetime.fromisoformat(record["redeemed_at"])
-                if record_time >= today_start:
-                    stats["today"] += 1
-                if record_time >= week_start:
-                    stats["this_week"] += 1
-                if record_time >= month_start:
-                    stats["this_month"] += 1
-            except:
-                pass
-
-        # 分页
-        # per_page = 20 (Removed hardcoded value)
-        total_records = len(filtered_records)
-        total_pages = math.ceil(total_records / per_page) if total_records > 0 else 1
-
-        # 确保页码有效
-        if page_int < 1:
-            page_int = 1
-        if page_int > total_pages:
-            page_int = total_pages
-
-        start_idx = (page_int - 1) * per_page
-        end_idx = start_idx + per_page
-        paginated_records = filtered_records[start_idx:end_idx]
-
-        # 格式化时间
-        for record in paginated_records:
-            try:
-                dt = datetime.fromisoformat(record["redeemed_at"])
-                record["redeemed_at"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                pass
+        if not records_result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=records_result.get("error") or "获取使用记录失败",
+            )
 
         return templates.TemplateResponse(
             "admin/records/index.html",
@@ -1118,29 +1035,167 @@ async def records_page(
                 "request": request,
                 "user": current_user,
                 "active_page": "records",
-                "records": paginated_records,
-                "stats": stats,
+                "records": records_result.get("records", []),
+                "stats": records_result.get("stats", {}),
+                "source_counts": records_result.get("source_counts", {}),
                 "filters": {
                     "email": email,
                     "code": code,
                     "team_id": team_id,
+                    "source": source,
+                    "tg_chat_id": tg_chat_id,
                     "start_date": start_date,
                     "end_date": end_date
                 },
-                "pagination": {
-                    "current_page": page_int,
-                    "total_pages": total_pages,
-                    "total": total_records,
-                    "per_page": per_page
-                }
+                "pagination": records_result.get("pagination", {}),
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取使用记录失败: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取使用记录失败: {str(e)}"
+        )
+
+
+@router.get("/records/export.csv")
+async def export_records_csv(
+    email: Optional[str] = None,
+    code: Optional[str] = None,
+    team_id: Optional[str] = None,
+    source: Optional[str] = None,
+    tg_chat_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(require_admin),
+):
+    """按当前筛选条件导出使用记录（CSV，流式）"""
+    try:
+        from fastapi.responses import StreamingResponse
+        import csv
+        import io
+
+        source_norm = (source or "").strip().lower()
+        source_part = source_norm if source_norm in {"user", "admin", "tg"} else "all"
+        filename = f"redemption_records_{source_part}_{get_now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        def _escape_csv_cell(value):
+            """
+            防止 CSV/表格公式注入：
+            当字符串以 = + - @（或前置空白后以这些字符）开头时，Excel/Sheets 可能将其当作公式执行。
+            这里统一在前面加 `'` 让其作为纯文本显示。
+            """
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                return value
+            if value.startswith("'"):
+                return value
+            stripped = value.lstrip()
+            if stripped.startswith(("=", "+", "-", "@")):
+                return "'" + value
+            return value
+
+        headers = [
+            "id",
+            "email",
+            "code",
+            "team_id",
+            "team_name",
+            "account_id",
+            "redeemed_at",
+            "source",
+            "tg_chat_id",
+            "is_warranty_redemption",
+        ]
+
+        async def gen():
+            # 兼容：部分 FastAPI 版本 StreamingResponse 会在响应结束前提前 teardown request-scoped 依赖，
+            # 导致 Depends(get_db) 生成的 session 在流式导出中途被关闭。
+            async with AsyncSessionLocal() as db:
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(headers)
+                yield output.getvalue().encode("utf-8-sig")
+                output.seek(0)
+                output.truncate(0)
+
+                async for record in redemption_service.iter_records_for_export(
+                    db,
+                    email=email,
+                    code=code,
+                    team_id=team_id,
+                    source=source,
+                    tg_chat_id=tg_chat_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                ):
+                    writer.writerow([_escape_csv_cell(record.get(h)) for h in headers])
+                    yield output.getvalue().encode("utf-8")
+                    output.seek(0)
+                    output.truncate(0)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.error(f"导出使用记录 CSV 失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导出失败: {str(e)}",
+        )
+
+
+@router.get("/records/export.json")
+async def export_records_ndjson(
+    email: Optional[str] = None,
+    code: Optional[str] = None,
+    team_id: Optional[str] = None,
+    source: Optional[str] = None,
+    tg_chat_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(require_admin),
+):
+    """按当前筛选条件导出使用记录（NDJSON，流式）"""
+    try:
+        from fastapi.responses import StreamingResponse
+        import json
+
+        source_norm = (source or "").strip().lower()
+        source_part = source_norm if source_norm in {"user", "admin", "tg"} else "all"
+        filename = f"redemption_records_{source_part}_{get_now().strftime('%Y%m%d_%H%M%S')}.ndjson"
+
+        async def gen():
+            # 同 export.csv：确保流式导出期间 DB session 不会被 request teardown 提前关闭
+            async with AsyncSessionLocal() as db:
+                async for record in redemption_service.iter_records_for_export(
+                    db,
+                    email=email,
+                    code=code,
+                    team_id=team_id,
+                    source=source,
+                    tg_chat_id=tg_chat_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                ):
+                    yield (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+
+        return StreamingResponse(
+            gen(),
+            media_type="application/x-ndjson; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.error(f"导出使用记录 NDJSON 失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导出失败: {str(e)}",
         )
 
 

@@ -3,7 +3,7 @@
 用于在无需用户输入兑换码的情况下，自动选择可用兑换码并完成兑换上车流程
 """
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,8 @@ async def auto_redeem_by_email(
     auto_generate_count: int = 10,
     auto_generate_has_warranty: bool = True,
     auto_generate_warranty_days: int = 30,
+    source: str = "admin",
+    tg_chat_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     自动兑换（只提供邮箱）
@@ -144,6 +146,8 @@ async def auto_redeem_by_email(
                 code=code,
                 team_id=None,
                 db_session=db_session,
+                source=source,
+                tg_chat_id=tg_chat_id,
             )
 
             if redeem_result.get("success"):
@@ -193,4 +197,3 @@ async def auto_redeem_by_email(
         "team_info": None,
         "error": last_error,
     }
-

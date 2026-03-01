@@ -130,7 +130,8 @@ async def confirm_redeem(
             request.email,
             request.code,
             request.team_id,
-            db
+            db,
+            source="user",
         )
 
         if not result["success"]:

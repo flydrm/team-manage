@@ -424,7 +424,7 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
                 logger.error("TG Bot Token 未配置，无法发送消息")
                 return
 
-            result = await auto_redeem_by_email(email, db)
+            result = await auto_redeem_by_email(email, db, source="tg", tg_chat_id=chat_id)
             text = _format_redeem_result(result)
             await send_message(bot_token, chat_id, text, reply_to_message_id=reply_to_message_id)
         except Exception as e:

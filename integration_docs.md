@@ -232,7 +232,37 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 - 兑换结果
 - 使用的兑换码 `used_code`（注意：会暴露兑换码）
 - 分配的 Team 信息（若兑换成功）
+- 系统会写入使用记录来源 `source=tg`，并落库 `tg_chat_id`（仅数字 ID），便于在后台“使用记录”按来源/Chat ID 查询
 
 说明：
 - 若系统无可用兑换码，会自动生成 10 个**无过期质保**兑换码后继续兑换
 - 为避免群聊噪音，默认不响应非命令消息
+
+---
+
+## 6. 使用记录导出（可选）
+
+当你希望对“兑换上车明细”做统计/审计/对账时，可直接导出后台的使用记录（需要管理员身份：Session 或 `X-API-Key`）。
+
+### 记录来源（source）说明
+- `user`：用户端 `/` 页面通过“邮箱 + 兑换码”兑换
+- `admin`：管理端 `/admin/redeem` 通过“仅邮箱自动兑换”上车
+- `tg`：Telegram Bot 通过 `/redeem 邮箱` 自动兑换上车（会额外记录 `tg_chat_id`）
+
+### 导出接口
+- `GET /admin/records/export.csv`：CSV（UTF-8，首行带 BOM，Excel 友好）
+- `GET /admin/records/export.json`：NDJSON（每行一个 JSON，便于程序处理）
+
+两者均支持与后台列表一致的筛选参数：
+- `email` / `code` / `team_id`
+- `source`（`user` / `admin` / `tg`）
+- `tg_chat_id`（仅 `source=tg` 时有意义）
+- `start_date` / `end_date`（日期范围，格式与后台一致）
+
+示例（导出某个 TG chat 的上车明细）：
+```bash
+curl -L \
+  -H "X-API-Key: YOUR_CONFIGURED_API_KEY" \
+  "http://your-manager-domain.com/admin/records/export.csv?source=tg&tg_chat_id=123456789" \
+  -o records.csv
+```

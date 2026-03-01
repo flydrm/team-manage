@@ -76,6 +76,51 @@ def run_auto_migration():
             """)
             migrations_applied.append("redemption_records.is_warranty_redemption")
 
+        # 使用记录来源字段（用于区分 user/admin/tg）
+        if not column_exists(cursor, "redemption_records", "source"):
+            logger.info("添加 redemption_records.source 字段")
+            cursor.execute("""
+                ALTER TABLE redemption_records
+                ADD COLUMN source VARCHAR(16) DEFAULT 'user'
+            """)
+            migrations_applied.append("redemption_records.source")
+
+        if not column_exists(cursor, "redemption_records", "tg_chat_id"):
+            logger.info("添加 redemption_records.tg_chat_id 字段")
+            cursor.execute("""
+                ALTER TABLE redemption_records
+                ADD COLUMN tg_chat_id INTEGER
+            """)
+            migrations_applied.append("redemption_records.tg_chat_id")
+
+        # 兜底：历史记录 source 为空时回填为 user，避免筛选异常
+        if column_exists(cursor, "redemption_records", "source"):
+            try:
+                cursor.execute("""
+                    UPDATE redemption_records
+                    SET source='user'
+                    WHERE source IS NULL OR source=''
+                """)
+            except Exception as e:
+                logger.warning(f"回填 redemption_records.source 失败: {e}")
+
+        # 索引（SQLite 旧库需要显式创建）
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_redemption_records_source ON redemption_records(source)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_redemption_records_redeemed_at ON redemption_records(redeemed_at)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_redemption_records_source_redeemed_at ON redemption_records(source, redeemed_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_redemption_records_tg_chat_id_redeemed_at ON redemption_records(tg_chat_id, redeemed_at)"
+            )
+            # Partial index：TG 专用（索引更小，过滤更快）
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_redemption_records_tg_partial ON redemption_records(tg_chat_id, redeemed_at) WHERE source='tg'"
+            )
+        except Exception as e:
+            logger.warning(f"创建 redemption_records 索引失败: {e}")
+
         # 检查并添加 Token 刷新相关字段
         if not column_exists(cursor, "teams", "refresh_token_encrypted"):
             logger.info("添加 teams.refresh_token_encrypted 字段")
