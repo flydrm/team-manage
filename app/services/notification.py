@@ -54,10 +54,14 @@ class NotificationService:
         if not bot_token or not chat_ids:
             return False
 
-        text = (
-            f"库存不足预警：当前总可用车位 {available_seats}，阈值 {threshold}。\n"
-            "请及时补货导入新账号（私聊 Bot 使用 /importteam）。"
-        )
+        text = "\n".join(
+            [
+                "⚠️📉 库存不足预警",
+                f"📦 当前总可用车位: {available_seats}",
+                f"🎯 预警阈值: {threshold}",
+                "🔧 建议：请及时补货导入新账号（私聊 Bot 使用 /importteam）。",
+            ]
+        ).strip()
 
         results = await asyncio.gather(
             *(send_message(bot_token, chat_id, text) for chat_id in chat_ids),
@@ -65,15 +69,34 @@ class NotificationService:
         )
 
         any_success = False
+        success_count = 0
+        fail_count = 0
+        first_error: Optional[str] = None
+        failed_ids: list[int] = []
         for chat_id, res in zip(chat_ids, results):
             if isinstance(res, Exception):
-                logger.warning(f"TG 库存预警发送异常: chat_id={chat_id}, err={res}")
+                fail_count += 1
+                first_error = first_error or str(res)
+                if len(failed_ids) < 5:
+                    failed_ids.append(chat_id)
                 continue
             if isinstance(res, dict) and res.get("success"):
+                success_count += 1
                 any_success = True
             else:
+                fail_count += 1
                 err = res.get("error") if isinstance(res, dict) else str(res)
-                logger.warning(f"TG 库存预警发送失败: chat_id={chat_id}, err={err}")
+                first_error = first_error or err
+                if len(failed_ids) < 5:
+                    failed_ids.append(chat_id)
+
+        if fail_count:
+            ids_part = f", failed_chat_ids={failed_ids}" if failed_ids else ""
+            logger.warning(
+                f"TG 库存预警发送失败: failed={fail_count}/{len(chat_ids)}, first_err={first_error}{ids_part}"
+            )
+        if success_count:
+            logger.info(f"TG 库存预警发送成功: success={success_count}/{len(chat_ids)}")
 
         return any_success
 

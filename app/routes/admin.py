@@ -1586,7 +1586,7 @@ async def sync_telegram_webhook(
             {"command": "help", "description": "查看帮助"},
             {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
             {"command": "start", "description": "开始/帮助"},
-            {"command": "status", "description": "查看系统状态：/status"},
+            {"command": "status", "description": "查看业务状态：/status"},
         ]
         commands_private = [
             *commands_default,

@@ -207,9 +207,14 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 /redeem user@example.com
 ```
 
-查看当前库存/阈值等状态：
+查看业务状态统计（车位/Team/兑换码）：
 ```
 /status
+```
+
+查看更详细统计（兑换趋势、即将到期 Team 等）：
+```
+/status full
 ```
 
 补账号导入（**仅私聊**，避免在群聊泄漏 Token）：

@@ -6,16 +6,20 @@ import asyncio
 import logging
 import re
 import time
+from datetime import timedelta
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, status
+from sqlalchemy import and_, func, or_, select
 
 from app.database import AsyncSessionLocal
+from app.models import RedemptionCode, RedemptionRecord, Team
 from app.services.auto_redeem import auto_redeem_by_email
 from app.services.settings import settings_service
 from app.services.team import team_service
 from app.services.telegram import send_message
 from app.utils.token_parser import TokenParser
+from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -145,54 +149,229 @@ def _mask_secrets(text: str) -> str:
     return text
 
 
+def _truncate(text: str, limit: int = 260) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+def _format_iso_dt(iso_text: Optional[str]) -> str:
+    """
+    将 ISO 文本转成更适合阅读的格式（尽量保持简短）。
+    """
+    s = (iso_text or "").strip()
+    if not s:
+        return "-"
+    s = s.replace("T", " ")
+    # 去掉微秒
+    if "." in s:
+        s = s.split(".", 1)[0]
+    return s
+
+
+_TG_TEMPLATES: Dict[str, str] = {
+    "rate_limited": "⏱️ 操作太频繁，请稍后再试。",
+    "invalid_email": "📧 请输入有效邮箱。\n\n{help}",
+    "redeem_received": "🧾 已收到兑换请求：{email}\n⏳ 正在处理中，请稍候…",
+    "import_received": "📥 已收到导入请求\n⏳ 正在处理中，请稍候…",
+    "import_private_only": "🛡️ 为安全起见，补账号导入仅支持私聊本 Bot 使用。",
+    "need_access_token": (
+        "🔑 请粘贴有效的 Access Token(AT)。\n"
+        "示例：/importteam <AT>\n"
+        "💡 也支持：回复一条包含 AT 的消息后发送 /importteam"
+    ),
+}
+
+
+def _tg_text(key: str, **kwargs: Any) -> str:
+    tpl = _TG_TEMPLATES.get(key, "")
+    try:
+        return tpl.format(**kwargs)
+    except Exception:
+        return tpl
+
+
 def _build_help_text() -> str:
     return (
-        "使用方法：\n"
-        "1) 自动上车：/redeem user@example.com\n"
-        "2) 查看状态：/status\n"
-        "3) 补账号导入(仅私聊)：/importteam <Access Token>\n\n"
-        "说明：系统会自动选择可用兑换码并自动分配 Team 完成上车；若无可用兑换码会自动生成 10 个无过期质保码后继续。"
+        "🤖 使用方法\n"
+        "\n"
+        "✅ 自动上车：\n"
+        "/redeem user@example.com\n"
+        "\n"
+        "📊 查看业务状态：\n"
+        "/status\n"
+        "/status full\n"
+        "\n"
+        "🔑 补账号导入（仅私聊）：\n"
+        "/importteam <AT>\n"
+        "💡 也支持：回复一条包含 AT 的消息后发送 /importteam\n"
+        "\n"
+        "📝 说明：系统会自动选择可用兑换码并分配 Team 完成上车；若无可用兑换码会自动生成 10 个无过期质保码后继续。"
     )
+
+
+def _format_unknown_error(prefix: str, error: str) -> str:
+    err = _truncate(_mask_secrets(error), 260)
+    if not err:
+        return f"❌ {prefix}失败：未知错误"
+    return f"❌ {prefix}失败：{err}"
+
+
+def _friendly_redeem_error(error: str) -> str:
+    err = _truncate(_mask_secrets(error), 260)
+    err_lower = err.lower()
+
+    # 无可用 Team / 车位相关
+    if any(k in err for k in ["没有可用的 Team", "您已加入所有可用 Team", "当前无可用 Team"]):
+        return "🚫 当前没有可用车位，请先补账号导入（私聊发送 /importteam <AT>）。"
+
+    # Team 满员
+    if any(k in err for k in ["Team 已满", "Team 席位已满"]) or any(
+        k in err_lower for k in ["maximum number of seats", "reached maximum number of seats"]
+    ):
+        return "🚫 当前 Team 席位已满，请稍后重试或先补账号导入（/importteam，仅私聊）。"
+
+    # Team 异常/封禁/Token 失效
+    if any(k in err for k in ["Team 账号被封禁", "Team 账号连续出错", "Team 账号 Token 已失效"]):
+        return f"⛔ {err}。建议补账号或重新导入（/importteam，仅私聊）。".strip()
+
+    if any(k in err for k in ["所选 Team 已失效", "Team 状态异常"]):
+        return f"⚠️ {err}。建议稍后重试或补账号导入。".strip()
+
+    # 自动生成兑换码失败
+    if any(k in err for k in ["自动生成兑换码失败", "批量生成兑换码失败"]):
+        return "⚠️ 自动生成兑换码失败，请稍后重试。"
+
+    # 兑换码问题（理论上会自动重试，这里给用户更清晰提示）
+    if "兑换码" in err and any(k in err for k in ["不存在", "已被使用", "已过期", "已被占用", "记录丢失"]):
+        return "🎟️ 兑换码不可用，系统已自动重试；如仍失败请稍后再试。"
+
+    # 其他：尽量展示原错误，便于自用排查
+    return _format_unknown_error("兑换", err)
+
+
+def _friendly_import_error(error: str) -> str:
+    err = _truncate(_mask_secrets(error), 260)
+    err_lower = err.lower()
+
+    if any(k in err for k in ["已在系统", "已存在", "unique constraint"]):
+        return "ℹ️ 账号已存在，无需重复导入。"
+
+    if any(k in err for k in ["Token 对应的账号身份", "邮箱不符", "Session 污染"]):
+        return "⚠️ Token 身份与邮箱不一致，可能是 Session 污染。建议清理后重新获取 Token 再导入。"
+
+    if "未发现可导入的 Team 账号" in err:
+        return "📭 未发现可导入的 Team 账号（AT 可能无效/无 Team/权限不足）。"
+
+    if any(k in err_lower for k in ["token", "jwt", "unauthorized", "forbidden", "invalid", "expired"]):
+        return "🔑 AT 无效或已过期，请重新获取后再试。"
+
+    return _format_unknown_error("导入", err)
+
+
+def _format_business_status(
+    *,
+    available_seats: int,
+    threshold: int,
+    team_total: int,
+    team_available: int,
+    team_status_counts: Dict[str, int],
+    code_total: int,
+    code_status_counts: Dict[str, int],
+    unused_warranty: int,
+    unused_normal: int,
+    full: bool = False,
+    redeem_24h: Optional[int] = None,
+    redeem_7d: Optional[int] = None,
+    expiring_teams: Optional[list[dict]] = None,
+) -> str:
+    known_team_statuses = {"active", "full", "expired", "banned", "error"}
+    other_team = sum(v for k, v in team_status_counts.items() if (k or "other") not in known_team_statuses)
+
+    team_active = int(team_status_counts.get("active") or 0)
+    team_full = int(team_status_counts.get("full") or 0)
+    team_expired = int(team_status_counts.get("expired") or 0)
+    team_banned = int(team_status_counts.get("banned") or 0)
+    team_error = int(team_status_counts.get("error") or 0)
+
+    known_code_statuses = {"unused", "used", "expired", "warranty_active"}
+    other_code = sum(v for k, v in code_status_counts.items() if (k or "other") not in known_code_statuses)
+
+    code_unused = int(code_status_counts.get("unused") or 0)
+    code_used = int(code_status_counts.get("used") or 0)
+    code_expired = int(code_status_counts.get("expired") or 0)
+    code_warranty_active = int(code_status_counts.get("warranty_active") or 0)
+
+    lines = [
+        "📊 业务状态",
+        f"📦 车位：总可用 {int(available_seats)} ｜🎯 预警阈值 {int(threshold)}",
+        f"👥 Team：总 {int(team_total)} ｜可用 {int(team_available)}",
+        f"🧩 状态：active {team_active} / full {team_full} / expired {team_expired} / banned {team_banned} / error {team_error} / other {int(other_team)}",
+        f"🎟️ 兑换码：总 {int(code_total)}",
+        f"📌 状态：unused {code_unused}(质保 {int(unused_warranty)} / 普通 {int(unused_normal)}) / used {code_used} / expired {code_expired} / warranty_active {code_warranty_active} / other {int(other_code)}",
+    ]
+
+    if not full:
+        return "\n".join(lines).strip()
+
+    lines.extend(["", "📈 兑换趋势"])
+    if redeem_24h is not None:
+        lines.append(f"- 24h 兑换次数：{int(redeem_24h)}")
+    if redeem_7d is not None:
+        lines.append(f"- 7d 兑换次数：{int(redeem_7d)}")
+
+    lines.extend(["", "⏳ 即将到期 Team（Top 5）"])
+    if expiring_teams:
+        for t in expiring_teams[:5]:
+            team_id = t.get("team_id")
+            team_name = t.get("team_name") or "-"
+            expires_at = _format_iso_dt(t.get("expires_at"))
+            remaining = t.get("remaining_seats")
+            status_text = t.get("status") or "-"
+            lines.append(f"- ID {team_id}｜{team_name}｜{expires_at}｜剩余 {remaining}｜{status_text}")
+    else:
+        lines.append("- （暂无）")
+
+    return "\n".join(lines).strip()
 
 
 def _format_redeem_result(result: Dict[str, Any]) -> str:
     if result.get("success"):
         team_info = result.get("team_info") or {}
-        lines = [
-            f"兑换成功：{result.get('message') or ''}".strip(),
-            f"使用兑换码: {result.get('used_code')}",
-        ]
-        if result.get("generated_codes"):
-            lines.append(f"本次自动生成兑换码: {result.get('generated_codes')}")
+        msg = (result.get("message") or "").strip()
+        lines = [f"✅ 兑换成功{('：' + msg) if msg else ''}".strip("：")]
+        lines.append(f"🎟️ 兑换码: {result.get('used_code') or '-'}")
+        generated = int(result.get("generated_codes") or 0)
+        if generated:
+            lines.append(f"🆕 自动生成兑换码: {generated} 个")
         team_id = team_info.get("team_id")
         team_name = team_info.get("team_name")
         if team_name or team_id is not None:
-            lines.append(f"Team: {team_name or '-'} (ID: {team_id if team_id is not None else '-'})")
+            lines.append(f"👥 Team: {team_name or '-'} (ID: {team_id if team_id is not None else '-'})")
         if team_info.get("expires_at"):
-            lines.append(f"到期时间: {team_info.get('expires_at')}")
+            lines.append(f"📅 到期时间: {_format_iso_dt(team_info.get('expires_at'))}")
         return "\n".join(lines).strip()
 
-    return f"兑换失败：{result.get('error') or '未知错误'}"
+    return _friendly_redeem_error(result.get("error") or "")
 
 
 def _format_import_result(result: Dict[str, Any]) -> str:
     if result.get("success"):
         lines = [
-            f"导入成功：{(result.get('message') or '').strip()}".strip("：").strip(),
+            f"✅ 导入成功{('：' + (result.get('message') or '').strip()) if (result.get('message') or '').strip() else ''}".strip("："),
         ]
         email = result.get("email")
         if email:
-            lines.append(f"邮箱: {email}")
+            lines.append(f"📧 邮箱: {email}")
         team_id = result.get("team_id")
         if team_id is not None:
-            lines.append(f"首个 Team ID: {team_id}")
+            lines.append(f"👥 首个 Team ID: {team_id}")
         return "\n".join([l for l in lines if l]).strip()
 
-    err = result.get("error") or "未知错误"
-    msg = f"导入失败：{err}"
-    if "已在系统" in err or "已存在" in err:
-        msg += "\n说明：账号已存在，无需重复导入。"
-    return msg
+    return _friendly_import_error(result.get("error") or "")
 
 async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], email: str) -> None:
     """
@@ -217,10 +396,11 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
             try:
                 bot_token = await settings_service.get_setting(db, "tg_bot_token", "")
                 if bot_token:
+                    err_text = _truncate(_mask_secrets(str(e)), 260) or "系统异常"
                     await send_message(
                         bot_token,
                         chat_id,
-                        f"兑换失败：{_mask_secrets(str(e)) or '系统异常'}",
+                        f"⚠️ 兑换失败：系统异常\n原因：{err_text}",
                         reply_to_message_id=reply_to_message_id,
                     )
             except Exception:
@@ -250,10 +430,11 @@ async def _process_import(chat_id: int, reply_to_message_id: Optional[int], acce
             try:
                 bot_token = await settings_service.get_setting(db, "tg_bot_token", "")
                 if bot_token:
+                    err_text = _truncate(_mask_secrets(str(e)), 260) or "系统异常"
                     await send_message(
                         bot_token,
                         chat_id,
-                        f"导入失败：{_mask_secrets(str(e)) or '系统异常'}",
+                        f"⚠️ 导入失败：系统异常\n原因：{err_text}",
                         reply_to_message_id=reply_to_message_id,
                     )
             except Exception:
@@ -315,21 +496,24 @@ async def telegram_webhook(request: Request):
             asyncio.create_task(send_message(bot_token, chat_id, _build_help_text(), reply_to_message_id=message_id))
         return {"ok": True}
 
-    # /status 查看系统状态（只读）
+    # /status 查看业务状态（只读）
     if cmd == "/status" or _STATUS_CMD_RE.match(text):
         if _rate_limited(chat_id, _rate_limit_status, _STATUS_RATE_LIMIT_SECONDS):
             if bot_token:
                 asyncio.create_task(
-                    send_message(bot_token, chat_id, "操作太频繁，请稍后再试。", reply_to_message_id=message_id)
+                    send_message(bot_token, chat_id, _tg_text("rate_limited"), reply_to_message_id=message_id)
                 )
             return {"ok": True}
 
+        rest = rest_from_entities
+        if not rest:
+            m = _STATUS_CMD_RE.match(text)
+            rest = (m.group(1) or "").strip() if m else ""
+        rest_norm = (rest or "").strip().lower()
+        is_full = rest_norm in {"full", "detail", "details", "all"} or (rest or "").strip() in {"全部", "详细"}
+
         async with AsyncSessionLocal() as db:
             threshold_str = await settings_service.get_setting(db, "low_stock_threshold", "10")
-            webhook_url = await settings_service.get_setting(db, "webhook_url", "")
-            tg_enabled_setting = (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true"
-            tg_notify_chat_ids = await settings_service.get_setting(db, "tg_notify_chat_ids", None)
-
             try:
                 threshold = int(threshold_str)
             except Exception:
@@ -337,20 +521,122 @@ async def telegram_webhook(request: Request):
 
             available_seats = await team_service.get_total_available_seats(db)
 
-        if tg_notify_chat_ids is None:
-            notify_desc = "回退白名单" if (allowed_raw or "").strip() else "未配置"
-        else:
-            notify_desc = "已配置" if (tg_notify_chat_ids or "").strip() else "未配置"
+            team_total = int((await db.execute(select(func.count()).select_from(Team))).scalar() or 0)
+            team_available = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(Team)
+                        .where(and_(Team.status == "active", Team.current_members < Team.max_members))
+                    )
+                ).scalar()
+                or 0
+            )
+            team_rows = (await db.execute(select(Team.status, func.count()).group_by(Team.status))).all()
+            team_status_counts = {(k or "other"): int(v or 0) for k, v in team_rows}
 
-        lines = [
-            "系统状态：",
-            f"- 总可用车位: {available_seats}",
-            f"- 预警阈值: {threshold}",
-            f"- Webhook URL: {'已配置' if webhook_url else '未配置'}",
-            f"- TG 启用: {'是' if tg_enabled_setting else '否'}",
-            f"- TG 预警接收: {notify_desc}",
-        ]
-        status_text = "\n".join(lines).strip()
+            code_total = int((await db.execute(select(func.count()).select_from(RedemptionCode))).scalar() or 0)
+            code_rows = (await db.execute(select(RedemptionCode.status, func.count()).group_by(RedemptionCode.status))).all()
+            code_status_counts = {(k or "other"): int(v or 0) for k, v in code_rows}
+
+            unused_warranty = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(RedemptionCode)
+                        .where(and_(RedemptionCode.status == "unused", RedemptionCode.has_warranty.is_(True)))
+                    )
+                ).scalar()
+                or 0
+            )
+            unused_normal = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(RedemptionCode)
+                        .where(
+                            and_(
+                                RedemptionCode.status == "unused",
+                                or_(RedemptionCode.has_warranty.is_(False), RedemptionCode.has_warranty.is_(None)),
+                            )
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+
+            redeem_24h = None
+            redeem_7d = None
+            expiring_teams = None
+            if is_full:
+                now = get_now()
+                since_24h = now - timedelta(hours=24)
+                since_7d = now - timedelta(days=7)
+
+                redeem_24h = int(
+                    (
+                        await db.execute(
+                            select(func.count())
+                            .select_from(RedemptionRecord)
+                            .where(RedemptionRecord.redeemed_at >= since_24h)
+                        )
+                    ).scalar()
+                    or 0
+                )
+                redeem_7d = int(
+                    (
+                        await db.execute(
+                            select(func.count())
+                            .select_from(RedemptionRecord)
+                            .where(RedemptionRecord.redeemed_at >= since_7d)
+                        )
+                    ).scalar()
+                    or 0
+                )
+
+                exp_rows = (
+                    await db.execute(
+                        select(
+                            Team.id,
+                            Team.team_name,
+                            Team.expires_at,
+                            Team.current_members,
+                            Team.max_members,
+                            Team.status,
+                        )
+                        .where(and_(Team.status == "active", Team.expires_at.is_not(None)))
+                        .order_by(Team.expires_at.asc())
+                        .limit(5)
+                    )
+                ).all()
+                expiring_teams = []
+                for team_id, team_name, expires_at, current_members, max_members, t_status in exp_rows:
+                    remaining = int((max_members or 0) - (current_members or 0))
+                    expiring_teams.append(
+                        {
+                            "team_id": team_id,
+                            "team_name": team_name,
+                            "expires_at": expires_at.isoformat() if expires_at else None,
+                            "remaining_seats": remaining,
+                            "status": t_status,
+                        }
+                    )
+
+        status_text = _format_business_status(
+            available_seats=int(available_seats),
+            threshold=int(threshold),
+            team_total=team_total,
+            team_available=team_available,
+            team_status_counts=team_status_counts,
+            code_total=code_total,
+            code_status_counts=code_status_counts,
+            unused_warranty=unused_warranty,
+            unused_normal=unused_normal,
+            full=is_full,
+            redeem_24h=redeem_24h,
+            redeem_7d=redeem_7d,
+            expiring_teams=expiring_teams,
+        )
 
         if bot_token:
             asyncio.create_task(send_message(bot_token, chat_id, status_text, reply_to_message_id=message_id))
@@ -362,7 +648,7 @@ async def telegram_webhook(request: Request):
         if _rate_limited(chat_id, _rate_limit_redeem, _REDEEM_RATE_LIMIT_SECONDS):
             if bot_token:
                 asyncio.create_task(
-                    send_message(bot_token, chat_id, "操作太频繁，请稍后再试。", reply_to_message_id=message_id)
+                    send_message(bot_token, chat_id, _tg_text("rate_limited"), reply_to_message_id=message_id)
                 )
             return {"ok": True}
 
@@ -375,7 +661,12 @@ async def telegram_webhook(request: Request):
         if not email_match:
             if bot_token:
                 asyncio.create_task(
-                    send_message(bot_token, chat_id, "请输入有效邮箱。\n\n" + _build_help_text(), reply_to_message_id=message_id)
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        _tg_text("invalid_email", help=_build_help_text()),
+                        reply_to_message_id=message_id,
+                    )
                 )
             return {"ok": True}
 
@@ -384,7 +675,12 @@ async def telegram_webhook(request: Request):
         # 先回一条“处理中”，再异步执行兑换并回结果
         if bot_token:
             asyncio.create_task(
-                send_message(bot_token, chat_id, f"已收到兑换请求：{email}\n正在处理中，请稍候…", reply_to_message_id=message_id)
+                send_message(
+                    bot_token,
+                    chat_id,
+                    _tg_text("redeem_received", email=email),
+                    reply_to_message_id=message_id,
+                )
             )
         asyncio.create_task(_process_redeem(chat_id, message_id, email))
         return {"ok": True}
@@ -395,14 +691,14 @@ async def telegram_webhook(request: Request):
         if _rate_limited(chat_id, _rate_limit_import, _IMPORT_RATE_LIMIT_SECONDS):
             if bot_token:
                 asyncio.create_task(
-                    send_message(bot_token, chat_id, "操作太频繁，请稍后再试。", reply_to_message_id=message_id)
+                    send_message(bot_token, chat_id, _tg_text("rate_limited"), reply_to_message_id=message_id)
                 )
             return {"ok": True}
 
         if chat_type != "private":
             if bot_token:
                 asyncio.create_task(
-                    send_message(bot_token, chat_id, "为安全起见，补账号导入仅支持私聊本 Bot 使用。", reply_to_message_id=message_id)
+                    send_message(bot_token, chat_id, _tg_text("import_private_only"), reply_to_message_id=message_id)
                 )
             return {"ok": True}
 
@@ -420,7 +716,7 @@ async def telegram_webhook(request: Request):
                     send_message(
                         bot_token,
                         chat_id,
-                        "请粘贴有效的 Access Token(AT)。\n示例：/importteam <AT>\n（也支持回复一条包含 AT 的消息后发送 /importteam）",
+                        _tg_text("need_access_token"),
                         reply_to_message_id=message_id,
                     )
                 )
@@ -428,7 +724,7 @@ async def telegram_webhook(request: Request):
 
         if bot_token:
             asyncio.create_task(
-                send_message(bot_token, chat_id, "已收到导入请求：正在处理中，请稍候…", reply_to_message_id=message_id)
+                send_message(bot_token, chat_id, _tg_text("import_received"), reply_to_message_id=message_id)
             )
         asyncio.create_task(_process_import(chat_id, message_id, access_token))
         return {"ok": True}
