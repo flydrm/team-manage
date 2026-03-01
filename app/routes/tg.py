@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -170,6 +170,42 @@ def _format_iso_dt(iso_text: Optional[str]) -> str:
     if "." in s:
         s = s.split(".", 1)[0]
     return s
+
+
+def _parse_expires_at(value: Any) -> Optional[datetime]:
+    """
+    将 expires_at（可能是 datetime / str）解析为 datetime 以用于排序。
+    注意：历史数据可能存在格式不一致，解析失败则返回 None（排序时会放到最后）。
+    """
+    if value is None:
+        return None
+
+    dt: Optional[datetime] = None
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            s = s.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(s)
+            except ValueError:
+                # 兼容部分客户端使用空格而非 "T"
+                dt = datetime.fromisoformat(s.replace(" ", "T"))
+        else:
+            return None
+
+        if dt is None:
+            return None
+
+        # 统一到 naive datetime，避免 tz-aware 与 naive 混用导致比较异常
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.replace(tzinfo=None)
+    except Exception:
+        return None
 
 
 _TG_TEMPLATES: Dict[str, str] = {
@@ -605,22 +641,36 @@ async def telegram_webhook(request: Request):
                             Team.status,
                         )
                         .where(and_(Team.status == "active", Team.expires_at.is_not(None)))
-                        .order_by(Team.expires_at.asc())
-                        .limit(5)
                     )
                 ).all()
-                expiring_teams = []
+                candidates = []
                 for team_id, team_name, expires_at, current_members, max_members, t_status in exp_rows:
+                    parsed_expires_at = _parse_expires_at(expires_at)
                     remaining = int((max_members or 0) - (current_members or 0))
-                    expiring_teams.append(
+                    expires_text: Optional[str] = None
+                    if isinstance(expires_at, datetime):
+                        expires_text = expires_at.isoformat()
+                    elif isinstance(expires_at, str):
+                        expires_text = expires_at
+
+                    candidates.append(
                         {
                             "team_id": team_id,
                             "team_name": team_name,
-                            "expires_at": expires_at.isoformat() if expires_at else None,
+                            "expires_at": expires_text,
                             "remaining_seats": remaining,
                             "status": t_status,
+                            "_expires_at_dt": parsed_expires_at,
                         }
                     )
+                candidates.sort(
+                    key=lambda t: (
+                        t.get("_expires_at_dt") is None,
+                        t.get("_expires_at_dt") or datetime.max,
+                        int(t.get("team_id") or 0),
+                    )
+                )
+                expiring_teams = [{k: v for k, v in t.items() if k != "_expires_at_dt"} for t in candidates[:5]]
 
         status_text = _format_business_status(
             available_seats=int(available_seats),
