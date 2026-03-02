@@ -109,6 +109,7 @@ class RedemptionRecord(Base):
     # 索引
     __table_args__ = (
         Index("idx_email", "email"),
+        Index("idx_redemption_records_email_redeemed_at", "email", "redeemed_at"),
         Index("idx_redemption_records_source", "source"),
         Index("idx_redemption_records_redeemed_at", "redeemed_at"),
         Index("idx_redemption_records_source_redeemed_at", "source", "redeemed_at"),

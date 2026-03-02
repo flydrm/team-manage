@@ -162,6 +162,8 @@ async def handle_low_stock(request: Request):
 - **PUBLIC_BASE_URL**：你的系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
 - **Bot Token**：从 BotFather 获取
 - **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
+- **启用 TG 撤销（/withdraw）**：开启后允许在 TG 私聊使用撤销功能（带按钮二次确认）
+- **超级管理员 Chat ID（可查询/撤销全部）**：配置后这些 chat_id 拥有 `/records`/`/withdraw` 全量权限（仍需在白名单中）
 - **库存预警通知 Chat ID**：用于接收“库存不足预警”消息（保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用白名单；支持逗号/空格/换行分隔；群组/频道可能是负数）
 - **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
 
@@ -198,7 +200,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 命令联想说明：
 - 同步完成后，在 Telegram 输入 `/` 会出现命令列表：
   - **群聊/频道/默认**：`/help`、`/redeem`、`/start`、`/status`
-  - **私聊**：除以上命令外，还会出现 `/importteam`（补账号导入）
+  - **私聊**：除以上命令外，还会出现 `/importteam`（补账号导入）、`/records`（查询记录）、`/withdraw`（撤销上车）
 - 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
 
 ### 使用方法
@@ -206,6 +208,25 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 ```
 /redeem user@example.com
 ```
+
+查询使用记录（**仅私聊**，默认仅返回有效期内记录）：
+```
+/records user@example.com
+/records user@example.com 10
+```
+超级管理员可查询全量历史：
+```
+/records user@example.com all
+```
+
+撤销上车（**仅私聊**，需要按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录）：
+```
+/withdraw user@example.com
+/withdraw 123
+```
+说明：
+- `/withdraw 邮箱` 会先返回最近候选记录供点击选择，再进入确认
+- `/withdraw 记录ID` 会直接进入确认（无需手输确认码）
 
 查看业务状态统计（车位/Team/兑换码）：
 ```
@@ -238,6 +259,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 说明：
 - 若系统无可用兑换码，会自动生成 10 个**无过期质保**兑换码后继续兑换
 - 为避免群聊噪音，默认不响应非命令消息
+- Bot 内置频率限制；如果短时间内频繁触发限流，会提示“操作太频繁/频繁触发限流”
 
 ---
 

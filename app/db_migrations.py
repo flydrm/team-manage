@@ -109,6 +109,9 @@ def run_auto_migration():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_redemption_records_source ON redemption_records(source)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_redemption_records_redeemed_at ON redemption_records(redeemed_at)")
             cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_redemption_records_email_redeemed_at ON redemption_records(email, redeemed_at)"
+            )
+            cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_redemption_records_source_redeemed_at ON redemption_records(source, redeemed_at)"
             )
             cursor.execute(

@@ -199,15 +199,24 @@ async def admin_auto_redeem(
     email = str(redeem_data.email).strip()
     result = await auto_redeem_by_email(email, db, source="admin")
 
+    # 成功/失败都尽量返回当前总可用车位（用于前端披露与判断库存）
+    available_seats = None
+    try:
+        available_seats = int(await team_service.get_total_available_seats(db))
+    except Exception:
+        available_seats = None
+
     if result.get("success"):
-        return JSONResponse(content=result)
+        # 便于前端渲染与排查：成功时回显邮箱
+        return JSONResponse(content={**result, "email": email, "available_seats": available_seats})
 
     error = result.get("error") or "兑换失败"
     status_code = status.HTTP_400_BAD_REQUEST
     if "自动生成兑换码失败" in error or "批量生成兑换码失败" in error or error.startswith("自动兑换失败"):
         status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    return JSONResponse(status_code=status_code, content=result)
+    # 失败也回显邮箱（避免前端无法关联本次请求）
+    return JSONResponse(status_code=status_code, content={**result, "email": email, "available_seats": available_seats})
 
 
 @router.get("/redeem", response_class=HTMLResponse)
@@ -1285,6 +1294,8 @@ async def settings_page(
                 "tg_enabled": (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true",
                 "tg_bot_token": await settings_service.get_setting(db, "tg_bot_token", ""),
                 "tg_allowed_chat_ids": await settings_service.get_setting(db, "tg_allowed_chat_ids", ""),
+                "tg_withdraw_enabled": (await settings_service.get_setting(db, "tg_withdraw_enabled", "true") or "true").lower() == "true",
+                "tg_super_admin_chat_ids": await settings_service.get_setting(db, "tg_super_admin_chat_ids", ""),
                 "tg_notify_chat_ids": await settings_service.get_setting(db, "tg_notify_chat_ids", ""),
                 "tg_secret_token": await settings_service.get_setting(db, "tg_secret_token", ""),
             }
@@ -1321,6 +1332,8 @@ class TelegramSettingsRequest(BaseModel):
     public_base_url: str = Field("", description="PUBLIC_BASE_URL，用于拼接 Webhook 回调地址")
     bot_token: str = Field("", description="Telegram Bot Token")
     allowed_chat_ids: str = Field("", description="允许的 chat_id 白名单，逗号/空格/换行分隔")
+    withdraw_enabled: bool = Field(True, description="是否启用 TG 撤销功能（/withdraw）")
+    super_admin_chat_ids: str = Field("", description="TG 超级管理员 chat_id 列表（逗号/空格/换行分隔）")
     notify_chat_ids: str = Field("", description="库存预警通知 chat_id 列表，逗号/空格/换行分隔")
     secret_token: str = Field("", description="Telegram Webhook Secret Token（为空则自动生成）")
 
@@ -1505,6 +1518,8 @@ async def update_telegram_settings(
         public_base_url = _normalize_public_base_url(tg_data.public_base_url)
         bot_token = (tg_data.bot_token or "").strip()
         allowed_chat_ids_raw = (tg_data.allowed_chat_ids or "").strip()
+        withdraw_enabled = bool(tg_data.withdraw_enabled)
+        super_admin_chat_ids_raw = (tg_data.super_admin_chat_ids or "").strip()
         notify_chat_ids_raw = (tg_data.notify_chat_ids or "").strip()
         secret_token = (tg_data.secret_token or "").strip()
 
@@ -1548,6 +1563,15 @@ async def update_telegram_settings(
                     content={"success": False, "error": f"通知 Chat ID 配置错误: {str(e)}"}
                 )
 
+        if super_admin_chat_ids_raw:
+            try:
+                _ = _parse_tg_chat_ids(super_admin_chat_ids_raw)
+            except Exception as e:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": f"超级管理员 Chat ID 配置错误: {str(e)}"}
+                )
+
         # secret_token 为空则自动生成，避免误配置导致所有回调 403
         if not secret_token:
             secret_token = secrets.token_urlsafe(32)
@@ -1557,6 +1581,8 @@ async def update_telegram_settings(
             "public_base_url": public_base_url,
             "tg_bot_token": bot_token,
             "tg_allowed_chat_ids": allowed_chat_ids_raw,
+            "tg_withdraw_enabled": "true" if withdraw_enabled else "false",
+            "tg_super_admin_chat_ids": super_admin_chat_ids_raw,
             "tg_notify_chat_ids": notify_chat_ids_raw,
             "tg_secret_token": secret_token,
         }
@@ -1648,6 +1674,8 @@ async def sync_telegram_webhook(
         ]
         commands_private = [
             *commands_default,
+            {"command": "records", "description": "查询使用记录(有效期内)：/records 邮箱"},
+            {"command": "withdraw", "description": "撤销上车(需确认)：/withdraw 邮箱或ID"},
             {"command": "importteam", "description": "补账号导入(仅私聊)：/importteam AT"},
         ]
 

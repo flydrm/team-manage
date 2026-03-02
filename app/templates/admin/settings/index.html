@@ -134,6 +134,7 @@
             <p class="form-help">
                 启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team；
                 <code>/status</code> 可查看业务状态（支持 <code>/status full</code> 查看更多统计）；
+                私聊 Bot 支持 <code>/records 邮箱</code> 查询记录、<code>/withdraw 邮箱</code> 撤销上车（仅私聊，需确认）；
                 私聊 Bot 发送 <code>/importteam AT</code> 可补账号导入（仅私聊）
             </p>
         </div>
@@ -157,6 +158,21 @@
             <textarea id="tgAllowedChatIds" name="allowed_chat_ids" rows="3"
                 class="form-control" placeholder="例如: 123456789&#10;-1001234567890">{{ tg_allowed_chat_ids or '' }}</textarea>
             <p class="form-help">仅白名单中的 chat_id 可使用。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="tgWithdrawEnabled" name="withdraw_enabled" {% if tg_withdraw_enabled %}checked{% endif %}>
+                <span>启用 TG 撤销（/withdraw）</span>
+            </label>
+            <p class="form-help">开启后，私聊 Bot 可使用 <code>/withdraw</code> 撤销上车（带按钮二次确认）。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tgSuperAdminChatIds">超级管理员 Chat ID（可查询/撤销全部）</label>
+            <textarea id="tgSuperAdminChatIds" name="super_admin_chat_ids" rows="2"
+                class="form-control" placeholder="例如: 123456789">{{ tg_super_admin_chat_ids or '' }}</textarea>
+            <p class="form-help">这些 chat_id 将拥有 <code>/records</code>/<code>/withdraw</code> 的全量权限（仍需在白名单中）。支持逗号/空格/换行分隔</p>
         </div>
 
         <div class="form-group">
@@ -351,6 +367,8 @@
 	        const public_base_url = document.getElementById('publicBaseUrl').value.trim();
 	        const bot_token = document.getElementById('tgBotToken').value.trim();
 	        const allowed_chat_ids = document.getElementById('tgAllowedChatIds').value.trim();
+	        const withdraw_enabled = document.getElementById('tgWithdrawEnabled').checked;
+	        const super_admin_chat_ids = document.getElementById('tgSuperAdminChatIds').value.trim();
 	        const notify_chat_ids = document.getElementById('tgNotifyChatIds').value.trim();
 	        const secret_token = document.getElementById('tgSecretToken').value.trim();
 
@@ -375,7 +393,7 @@
 	                headers: {
 	                    'Content-Type': 'application/json'
 	                },
-	                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, notify_chat_ids, secret_token })
+	                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, withdraw_enabled, super_admin_chat_ids, notify_chat_ids, secret_token })
 	            });
 
             const data = await response.json();
