@@ -386,31 +386,44 @@ def _tg_text(key: str, **kwargs: Any) -> str:
         return tpl
 
 
-def _build_help_text() -> str:
-    return (
-        "🤖 使用方法\n"
-        "\n"
-        "✅ 自动上车：\n"
-        "/redeem user@example.com\n"
-        "\n"
-        "🧾 查询使用记录（仅私聊）：\n"
-        "/records user@example.com\n"
-        "/records user@example.com 10\n"
-        "\n"
-        "🧹 撤销上车（仅私聊，需确认）：\n"
-        "/withdraw user@example.com\n"
-        "/withdraw 123\n"
-        "\n"
-        "📊 查看业务状态：\n"
-        "/status\n"
-        "/status full\n"
-        "\n"
-        "🔑 补账号导入（仅私聊）：\n"
-        "/importteam <AT>\n"
-        "💡 也支持：回复一条包含 AT 的消息后发送 /importteam\n"
-        "\n"
-        "📝 说明：系统会自动选择可用兑换码并分配 Team 完成上车；若无可用兑换码会自动生成 10 个无过期质保码后继续。"
+def _build_help_text(*, is_superadmin: bool, can_redeem: bool) -> str:
+    lines = ["🤖 使用方法", ""]
+
+    if can_redeem:
+        lines.extend(["✅ 自动上车（仅私聊）：", "/redeem user@example.com", ""])
+
+    lines.extend(
+        [
+            "🧾 查询使用记录（仅私聊）：",
+            "/records user@example.com",
+            "/records user@example.com 10",
+            "",
+            "🧹 撤销上车（仅私聊，需确认）：",
+            "/withdraw user@example.com",
+            "/withdraw 123",
+            "",
+        ]
     )
+
+    if is_superadmin:
+        lines.extend(
+            [
+                "📊 查看业务状态（仅超管私聊）：",
+                "/status",
+                "/status full",
+                "",
+                "🔑 补账号导入（仅超管私聊）：",
+                "/importteam <AT>",
+                "💡 也支持：回复一条包含 AT 的消息后发送 /importteam",
+                "",
+            ]
+        )
+
+    lines.append("📝 说明：系统会自动选择可用兑换码并分配 Team 完成上车；若无可用兑换码会自动生成 10 个无过期质保码后继续。")
+    if not is_superadmin:
+        lines.append("ℹ️ 如需查看系统状态/补账号导入，请联系管理员开通超管权限。")
+
+    return "\n".join([l for l in lines if l is not None]).strip()
 
 
 def _format_unknown_error(prefix: str, error: str) -> str:
@@ -426,20 +439,20 @@ def _friendly_redeem_error(error: str) -> str:
 
     # 无可用 Team / 车位相关
     if any(k in err for k in ["没有可用的 Team", "您已加入所有可用 Team", "当前无可用 Team"]):
-        return "🚫 当前没有可用车位，请先补账号导入（私聊发送 /importteam <AT>）。"
+        return "🚫 当前没有可用车位，请联系管理员补货导入新账号（超管私聊 /importteam）。"
 
     # Team 满员
     if any(k in err for k in ["Team 已满", "Team 席位已满"]) or any(
         k in err_lower for k in ["maximum number of seats", "reached maximum number of seats"]
     ):
-        return "🚫 当前 Team 席位已满，请稍后重试或先补账号导入（/importteam，仅私聊）。"
+        return "🚫 当前 Team 席位已满，请稍后重试或联系管理员补货导入新账号（超管私聊 /importteam）。"
 
     # Team 异常/封禁/Token 失效
     if any(k in err for k in ["Team 账号被封禁", "Team 账号连续出错", "Team 账号 Token 已失效"]):
-        return f"⛔ {err}。建议补账号或重新导入（/importteam，仅私聊）。".strip()
+        return f"⛔ {err}。请联系管理员补账号或重新导入（超管私聊 /importteam）。".strip()
 
     if any(k in err for k in ["所选 Team 已失效", "Team 状态异常"]):
-        return f"⚠️ {err}。建议稍后重试或补账号导入。".strip()
+        return f"⚠️ {err}。建议稍后重试；如持续失败请联系管理员补账号或重新导入（超管私聊 /importteam）。".strip()
 
     # 自动生成兑换码失败
     if any(k in err for k in ["自动生成兑换码失败", "批量生成兑换码失败"]):
@@ -645,6 +658,24 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
 
             result = await auto_redeem_by_email(email, db, source="tg", tg_chat_id=chat_id)
             if result.get("success"):
+                team_info = result.get("team_info") or {}
+                logger.info(
+                    "TG audit: action=redeem_success, actor_chat_id=%s, email=%s, team_id=%s, used_code=%s, generated_codes=%s",
+                    chat_id,
+                    email,
+                    team_info.get("team_id"),
+                    result.get("used_code"),
+                    result.get("generated_codes"),
+                )
+            else:
+                err = _truncate(_mask_secrets(str(result.get("error") or "")), 200)
+                logger.info(
+                    "TG audit: action=redeem_fail, actor_chat_id=%s, email=%s, error=%s",
+                    chat_id,
+                    email,
+                    err or "-",
+                )
+            if result.get("success"):
                 try:
                     result["available_seats"] = int(await team_service.get_total_available_seats(db))
                 except Exception:
@@ -683,6 +714,20 @@ async def _process_import(chat_id: int, reply_to_message_id: Optional[int], acce
                 return
 
             result = await team_service.import_team_single(access_token=access_token, db_session=db)
+            if result.get("success"):
+                logger.info(
+                    "TG audit: action=importteam_success, actor_chat_id=%s, email=%s, team_id=%s",
+                    chat_id,
+                    result.get("email"),
+                    result.get("team_id"),
+                )
+            else:
+                err = _truncate(_mask_secrets(str(result.get("error") or "")), 200)
+                logger.info(
+                    "TG audit: action=importteam_fail, actor_chat_id=%s, error=%s",
+                    chat_id,
+                    err or "-",
+                )
             text = _format_import_result(result)
             await send_message(bot_token, chat_id, text, reply_to_message_id=reply_to_message_id)
         except Exception as e:
@@ -1386,6 +1431,7 @@ async def telegram_webhook(request: Request):
 
         secret_token = await settings_service.get_setting(db, "tg_secret_token", "")
         allowed_raw = await settings_service.get_setting(db, "tg_allowed_chat_ids", "")
+        redeem_raw = await settings_service.get_setting(db, "tg_redeem_chat_ids", "")
         bot_token = await settings_service.get_setting(db, "tg_bot_token", "")
         withdraw_enabled_raw = await settings_service.get_setting(db, "tg_withdraw_enabled", "true")
         super_admin_raw = await settings_service.get_setting(db, "tg_super_admin_chat_ids", "")
@@ -1400,6 +1446,10 @@ async def telegram_webhook(request: Request):
         allowed_chat_ids = _parse_chat_ids(allowed_raw)
     except Exception:
         allowed_chat_ids = set()
+    try:
+        redeem_chat_ids = _parse_chat_ids(redeem_raw)
+    except Exception:
+        redeem_chat_ids = set()
     try:
         super_admin_chat_ids = _parse_chat_ids(super_admin_raw)
     except Exception:
@@ -1457,15 +1507,46 @@ async def telegram_webhook(request: Request):
     cmd_raw, rest_from_entities = _extract_command_from_entities(text, entities)
     cmd = (cmd_raw.split("@", 1)[0].lower() if cmd_raw else "")
     is_superadmin = chat_id in super_admin_chat_ids
+    can_redeem = bool(is_superadmin or (not redeem_chat_ids) or (chat_id in redeem_chat_ids))
 
     # /start /help
     if cmd in ("/start", "/help") or text.lower().startswith("/start") or text.lower().startswith("/help"):
         if bot_token:
-            asyncio.create_task(send_message(bot_token, chat_id, _build_help_text(), reply_to_message_id=message_id))
+            asyncio.create_task(
+                send_message(
+                    bot_token,
+                    chat_id,
+                    _build_help_text(is_superadmin=is_superadmin, can_redeem=can_redeem),
+                    reply_to_message_id=message_id,
+                )
+            )
         return {"ok": True}
 
     # /status 查看业务状态（只读）
     if cmd == "/status" or _STATUS_CMD_RE.match(text):
+        if chat_type != "private":
+            if bot_token:
+                asyncio.create_task(
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        "🛡️ 为安全起见，/status 仅支持超管私聊本 Bot 使用。",
+                        reply_to_message_id=message_id,
+                    )
+                )
+            return {"ok": True}
+        if not is_superadmin:
+            if bot_token:
+                asyncio.create_task(
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        "⛔ 无权限：/status 仅超级管理员可用。",
+                        reply_to_message_id=message_id,
+                    )
+                )
+            return {"ok": True}
+
         if _rate_limited(chat_id, _rate_limit_status, _STATUS_RATE_LIMIT_SECONDS):
             if bot_token:
                 asyncio.create_task(
@@ -1479,6 +1560,8 @@ async def telegram_webhook(request: Request):
             rest = (m.group(1) or "").strip() if m else ""
         rest_norm = (rest or "").strip().lower()
         is_full = rest_norm in {"full", "detail", "details", "all"} or (rest or "").strip() in {"全部", "详细"}
+
+        logger.info(f"TG audit: action=status, actor_chat_id={chat_id}, full={is_full}")
 
         async with AsyncSessionLocal() as db:
             threshold_str = await settings_service.get_setting(db, "low_stock_threshold", "10")
@@ -1698,7 +1781,7 @@ async def telegram_webhook(request: Request):
                     send_message(
                         bot_token,
                         chat_id,
-                        _tg_text("invalid_email", help=_build_help_text()),
+                        _tg_text("invalid_email", help=_build_help_text(is_superadmin=is_superadmin, can_redeem=can_redeem)),
                         reply_to_message_id=message_id,
                     )
                 )
@@ -1777,6 +1860,29 @@ async def telegram_webhook(request: Request):
 
     # /redeem 邮箱（支持 entities + regex 兜底）
     if cmd == "/redeem" or _REDEEM_CMD_RE.match(text):
+        if chat_type != "private":
+            if bot_token:
+                asyncio.create_task(
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        "🛡️ 为安全起见，自动上车仅支持私聊本 Bot 使用。",
+                        reply_to_message_id=message_id,
+                    )
+                )
+            return {"ok": True}
+        if not can_redeem:
+            if bot_token:
+                asyncio.create_task(
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        "🚫 当前 Chat ID 未被授权使用 /redeem。\n请联系管理员将你的 Chat ID 加入“/redeem Chat ID（可用人员）”。",
+                        reply_to_message_id=message_id,
+                    )
+                )
+            return {"ok": True}
+
         # 频率限制（redeem）
         if _rate_limited(chat_id, _rate_limit_redeem, _REDEEM_RATE_LIMIT_SECONDS):
             if bot_token:
@@ -1797,13 +1903,14 @@ async def telegram_webhook(request: Request):
                     send_message(
                         bot_token,
                         chat_id,
-                        _tg_text("invalid_email", help=_build_help_text()),
+                        _tg_text("invalid_email", help=_build_help_text(is_superadmin=is_superadmin, can_redeem=can_redeem)),
                         reply_to_message_id=message_id,
                     )
                 )
             return {"ok": True}
 
         email = email_match.group(0)
+        logger.info(f"TG audit: action=redeem_request, actor_chat_id={chat_id}, email={email}")
 
         # 先回一条“处理中”，再异步执行兑换并回结果
         if bot_token:
@@ -1834,6 +1941,17 @@ async def telegram_webhook(request: Request):
                     send_message(bot_token, chat_id, _tg_text("import_private_only"), reply_to_message_id=message_id)
                 )
             return {"ok": True}
+        if not is_superadmin:
+            if bot_token:
+                asyncio.create_task(
+                    send_message(
+                        bot_token,
+                        chat_id,
+                        "⛔ 无权限：补账号导入仅超级管理员可用。",
+                        reply_to_message_id=message_id,
+                    )
+                )
+            return {"ok": True}
 
         rest = rest_from_entities
         if not rest:
@@ -1854,6 +1972,8 @@ async def telegram_webhook(request: Request):
                     )
                 )
             return {"ok": True}
+
+        logger.info(f"TG audit: action=importteam_request, actor_chat_id={chat_id}, token_len={len(access_token)}")
 
         if bot_token:
             asyncio.create_task(

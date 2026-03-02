@@ -114,10 +114,12 @@ class NotificationService:
 
                 tg_enabled = (await settings_service.get_setting(db_session, "tg_enabled", "false") or "false").lower() == "true"
                 tg_bot_token = await settings_service.get_setting(db_session, "tg_bot_token", "")
+                tg_super_admin_chat_ids_raw = await settings_service.get_setting(db_session, "tg_super_admin_chat_ids", "")
                 tg_notify_chat_ids_raw = await settings_service.get_setting(db_session, "tg_notify_chat_ids", None)
-                # 兼容旧版本：未配置 tg_notify_chat_ids 时，回退使用 tg_allowed_chat_ids
+                # 兼容旧版本：未配置 tg_notify_chat_ids 时，回退使用 tg_super_admin_chat_ids
+                # 注意：若 key 存在但为空字符串，视为显式关闭，不回退
                 if tg_notify_chat_ids_raw is None:
-                    tg_notify_chat_ids_raw = await settings_service.get_setting(db_session, "tg_allowed_chat_ids", "")
+                    tg_notify_chat_ids_raw = tg_super_admin_chat_ids_raw
 
                 # 若既没有 Webhook URL，也没有 TG 通知配置，则无需检查
                 has_tg_notify = bool(tg_enabled and tg_bot_token and (tg_notify_chat_ids_raw or "").strip())
@@ -152,6 +154,13 @@ class NotificationService:
                             or now - self._tg_low_stock_last_sent_at >= self._tg_low_stock_cooldown_seconds
                         ):
                             chat_ids = _parse_chat_ids(tg_notify_chat_ids_raw)
+                            # 强制仅给超管发送（避免误配置把库存/运营信息发给普通用户）
+                            super_admin_ids = set(_parse_chat_ids(tg_super_admin_chat_ids_raw)) if tg_super_admin_chat_ids_raw else set()
+                            if not super_admin_ids:
+                                chat_ids = []
+                                logger.warning("TG 库存预警已启用但未配置超级管理员 Chat ID，已跳过发送")
+                            else:
+                                chat_ids = [cid for cid in chat_ids if cid in super_admin_ids]
                             if chat_ids:
                                 tg_ok = await self._send_tg_low_stock_notification(
                                     tg_bot_token, chat_ids, available_seats, threshold

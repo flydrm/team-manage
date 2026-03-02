@@ -7,7 +7,8 @@
 当系统内所有活跃 Team 的总剩余车位（`max_members - current_members`）数量低于或等于管理员设置的阈值时，系统会向配置的 Webhook URL 发送 POST 请求。
 
 同时，如果启用了 **Telegram Bot** 并配置了 `tg_notify_chat_ids`，系统也会向通知 chat_id 推送一条库存预警消息（默认 10 分钟内去抖，避免重复刷屏）。
-兼容说明：如果你是从旧版本升级，数据库中还没有 `tg_notify_chat_ids` 这个配置项，系统会临时回退使用 `tg_allowed_chat_ids` 作为预警接收方；建议尽快配置 `tg_notify_chat_ids`（如想关闭 TG 预警，则保存为空）。
+为避免把库存/运营信息发给普通用户，TG 预警只会发送给“超级管理员”范围内的 chat_id（`tg_notify_chat_ids` 必须是 `tg_super_admin_chat_ids` 的子集）。
+兼容说明：如果你是从旧版本升级，数据库中还没有 `tg_notify_chat_ids` 这个配置项（key 不存在），系统会临时回退使用 `tg_super_admin_chat_ids` 作为预警接收方；如果你想关闭 TG 预警，则保存 `tg_notify_chat_ids` 为空字符串即可（此时不会回退）。
 如果你只希望使用 Telegram 通知，也可以不配置 Webhook URL。
 
 ### 请求信息
@@ -162,10 +163,16 @@ async def handle_low_stock(request: Request):
 - **PUBLIC_BASE_URL**：你的系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
 - **Bot Token**：从 BotFather 获取
 - **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
+- **/redeem Chat ID（可用人员）**：允许使用 `/redeem` 的 chat_id 列表；留空则默认=白名单（建议用于控制谁能“拉人上车”）
 - **启用 TG 撤销（/withdraw）**：开启后允许在 TG 私聊使用撤销功能（带按钮二次确认）
-- **超级管理员 Chat ID（可查询/撤销全部）**：配置后这些 chat_id 拥有 `/records`/`/withdraw` 全量权限（仍需在白名单中）
-- **库存预警通知 Chat ID**：用于接收“库存不足预警”消息（保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用白名单；支持逗号/空格/换行分隔；群组/频道可能是负数）
+- **超级管理员 Chat ID（超管）**：超管私聊可用 `/status`、`/importteam`，并拥有 `/records all` 与 `/withdraw` 全量权限（仍需在白名单中）
+- **库存预警通知 Chat ID**：用于接收“库存不足预警”消息（仅允许超管；保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用超管列表；支持逗号/空格/换行分隔；群组/频道可能是负数）
 - **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
+
+约束（启用 TG 时强制校验）：
+- `tg_super_admin_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集
+- `tg_notify_chat_ids` 必须是 `tg_super_admin_chat_ids` 的子集
+- `tg_redeem_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集（留空则默认=白名单）
 
 #### 如何获取 Chat ID（参考）
 建议在“同步 Webhook”之前获取 chat_id（Webhook 启用后 `getUpdates` 会冲突）。
@@ -199,15 +206,17 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 
 命令联想说明：
 - 同步完成后，在 Telegram 输入 `/` 会出现命令列表：
-  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`、`/status`
-  - **私聊**：除以上命令外，还会出现 `/importteam`（补账号导入）、`/records`（查询记录）、`/withdraw`（撤销上车）
+  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`、`/status`（仅超管私聊）
+  - **私聊**：除以上命令外，还会出现 `/records`（查询记录）、`/withdraw`（撤销上车）、`/importteam`（仅超管私聊）
 - 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
 
 ### 使用方法
-在 Telegram 对 Bot 发送命令：
+在 Telegram **私聊**对 Bot 发送命令（需要 chat_id 在白名单中）：
 ```
 /redeem user@example.com
 ```
+说明：
+- `/redeem` 仅支持私聊；如配置了 `tg_redeem_chat_ids`，则仅该列表中的 chat_id（以及超管）可使用
 
 查询使用记录（**仅私聊**，默认仅返回有效期内记录）：
 ```
@@ -219,7 +228,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 /records user@example.com all
 ```
 
-撤销上车（**仅私聊**，需要按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录）：
+撤销上车（**仅私聊**，需要按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录；超管可撤销所有来源）：
 ```
 /withdraw user@example.com
 /withdraw 123
@@ -228,12 +237,12 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 - `/withdraw 邮箱` 会先返回最近候选记录供点击选择，再进入确认
 - `/withdraw 记录ID` 会直接进入确认（无需手输确认码）
 
-查看业务状态统计（车位/Team/兑换码）：
+查看业务状态统计（**仅超管私聊**）：
 ```
 /status
 ```
 
-查看更详细统计（兑换趋势、即将到期 Team 等）：
+查看更详细统计（**仅超管私聊**，兑换趋势、即将到期 Team 等）：
 ```
 /status full
 ```
@@ -242,7 +251,7 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 - `/status` 会披露使用记录统计（总记录数/今日/本周/本月），口径对齐后台“使用记录”页。
 - `/status full` 在保留 24h/7d 兑换趋势的同时，也会展示使用记录统计与更多运营信息。
 
-补账号导入（**仅私聊**，避免在群聊泄漏 Token）：
+补账号导入（**仅超管私聊**，避免在群聊泄漏 Token）：
 ```
 /importteam <Access Token>
 ```

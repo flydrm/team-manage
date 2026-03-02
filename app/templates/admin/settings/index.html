@@ -132,10 +132,10 @@
                 <span>启用 Telegram TEAM 兑换</span>
             </label>
             <p class="form-help">
-                启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team；
-                <code>/status</code> 可查看业务状态（支持 <code>/status full</code> 查看更多统计）；
+                启用后,Telegram 中发送 <code>/redeem 邮箱</code> 将自动兑换并分配 Team（仅私聊；可通过“/redeem Chat ID”限制可使用人员）；
+                <code>/status</code> 可查看业务状态（仅超管私聊；支持 <code>/status full</code> 查看更多统计）；
                 私聊 Bot 支持 <code>/records 邮箱</code> 查询记录、<code>/withdraw 邮箱</code> 撤销上车（仅私聊，需确认）；
-                私聊 Bot 发送 <code>/importteam AT</code> 可补账号导入（仅私聊）
+                私聊 Bot 发送 <code>/importteam AT</code> 可补账号导入（仅超管私聊）
             </p>
         </div>
 
@@ -161,6 +161,13 @@
         </div>
 
         <div class="form-group">
+            <label for="tgRedeemChatIds">/redeem Chat ID（可用人员）</label>
+            <textarea id="tgRedeemChatIds" name="redeem_chat_ids" rows="3"
+                class="form-control" placeholder="留空则默认=允许白名单&#10;例如: 123456789">{{ tg_redeem_chat_ids or '' }}</textarea>
+            <p class="form-help">用于限制哪些 chat_id 可以使用 <code>/redeem</code> 拉人上车。留空表示白名单内均可使用。必须为“允许白名单”的子集。</p>
+        </div>
+
+        <div class="form-group">
             <label class="checkbox-label">
                 <input type="checkbox" id="tgWithdrawEnabled" name="withdraw_enabled" {% if tg_withdraw_enabled %}checked{% endif %}>
                 <span>启用 TG 撤销（/withdraw）</span>
@@ -172,14 +179,14 @@
             <label for="tgSuperAdminChatIds">超级管理员 Chat ID（可查询/撤销全部）</label>
             <textarea id="tgSuperAdminChatIds" name="super_admin_chat_ids" rows="2"
                 class="form-control" placeholder="例如: 123456789">{{ tg_super_admin_chat_ids or '' }}</textarea>
-            <p class="form-help">这些 chat_id 将拥有 <code>/records</code>/<code>/withdraw</code> 的全量权限（仍需在白名单中）。支持逗号/空格/换行分隔</p>
+            <p class="form-help">这些 chat_id 将拥有 <code>/records</code>/<code>/withdraw</code> 的全量权限，并可使用 <code>/status</code>/<code>/importteam</code>（均仅超管私聊；仍需在白名单中）。支持逗号/空格/换行分隔</p>
         </div>
 
         <div class="form-group">
             <label for="tgNotifyChatIds">库存预警通知 Chat ID</label>
             <textarea id="tgNotifyChatIds" name="notify_chat_ids" rows="3"
                 class="form-control" placeholder="例如: 123456789&#10;-1001234567890">{{ tg_notify_chat_ids or '' }}</textarea>
-            <p class="form-help">用于接收“库存不足预警”消息。留空表示关闭 TG 预警（兼容旧版本：未配置该项时会临时回退白名单）。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
+            <p class="form-help">用于接收“库存不足预警”消息。留空表示关闭 TG 预警（兼容旧版本：未配置该项时会回退超管）。必须为“超级管理员 Chat ID”的子集。支持逗号/空格/换行分隔,群组/频道可能是负数</p>
         </div>
 
         <div class="form-group">
@@ -367,6 +374,7 @@
 	        const public_base_url = document.getElementById('publicBaseUrl').value.trim();
 	        const bot_token = document.getElementById('tgBotToken').value.trim();
 	        const allowed_chat_ids = document.getElementById('tgAllowedChatIds').value.trim();
+	        const redeem_chat_ids = document.getElementById('tgRedeemChatIds').value.trim();
 	        const withdraw_enabled = document.getElementById('tgWithdrawEnabled').checked;
 	        const super_admin_chat_ids = document.getElementById('tgSuperAdminChatIds').value.trim();
 	        const notify_chat_ids = document.getElementById('tgNotifyChatIds').value.trim();
@@ -393,7 +401,7 @@
 	                headers: {
 	                    'Content-Type': 'application/json'
 	                },
-	                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, withdraw_enabled, super_admin_chat_ids, notify_chat_ids, secret_token })
+	                body: JSON.stringify({ enabled, public_base_url, bot_token, allowed_chat_ids, redeem_chat_ids, withdraw_enabled, super_admin_chat_ids, notify_chat_ids, secret_token })
 	            });
 
             const data = await response.json();

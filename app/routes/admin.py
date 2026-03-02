@@ -1294,6 +1294,7 @@ async def settings_page(
                 "tg_enabled": (await settings_service.get_setting(db, "tg_enabled", "false") or "false").lower() == "true",
                 "tg_bot_token": await settings_service.get_setting(db, "tg_bot_token", ""),
                 "tg_allowed_chat_ids": await settings_service.get_setting(db, "tg_allowed_chat_ids", ""),
+                "tg_redeem_chat_ids": await settings_service.get_setting(db, "tg_redeem_chat_ids", ""),
                 "tg_withdraw_enabled": (await settings_service.get_setting(db, "tg_withdraw_enabled", "true") or "true").lower() == "true",
                 "tg_super_admin_chat_ids": await settings_service.get_setting(db, "tg_super_admin_chat_ids", ""),
                 "tg_notify_chat_ids": await settings_service.get_setting(db, "tg_notify_chat_ids", ""),
@@ -1332,6 +1333,7 @@ class TelegramSettingsRequest(BaseModel):
     public_base_url: str = Field("", description="PUBLIC_BASE_URL，用于拼接 Webhook 回调地址")
     bot_token: str = Field("", description="Telegram Bot Token")
     allowed_chat_ids: str = Field("", description="允许的 chat_id 白名单，逗号/空格/换行分隔")
+    redeem_chat_ids: str = Field("", description="允许使用 /redeem 的 chat_id 列表（留空则默认=允许白名单）")
     withdraw_enabled: bool = Field(True, description="是否启用 TG 撤销功能（/withdraw）")
     super_admin_chat_ids: str = Field("", description="TG 超级管理员 chat_id 列表（逗号/空格/换行分隔）")
     notify_chat_ids: str = Field("", description="库存预警通知 chat_id 列表，逗号/空格/换行分隔")
@@ -1518,6 +1520,7 @@ async def update_telegram_settings(
         public_base_url = _normalize_public_base_url(tg_data.public_base_url)
         bot_token = (tg_data.bot_token or "").strip()
         allowed_chat_ids_raw = (tg_data.allowed_chat_ids or "").strip()
+        redeem_chat_ids_raw = (tg_data.redeem_chat_ids or "").strip()
         withdraw_enabled = bool(tg_data.withdraw_enabled)
         super_admin_chat_ids_raw = (tg_data.super_admin_chat_ids or "").strip()
         notify_chat_ids_raw = (tg_data.notify_chat_ids or "").strip()
@@ -1553,6 +1556,16 @@ async def update_telegram_settings(
                     content={"success": False, "error": str(e)}
                 )
 
+        # redeem_chat_ids 允许为空；非空则校验格式
+        if redeem_chat_ids_raw:
+            try:
+                _ = _parse_tg_chat_ids(redeem_chat_ids_raw)
+            except Exception as e:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": f"/redeem Chat ID 配置错误: {str(e)}"}
+                )
+
         # notify_chat_ids 允许为空；非空则校验格式
         if notify_chat_ids_raw:
             try:
@@ -1572,6 +1585,38 @@ async def update_telegram_settings(
                     content={"success": False, "error": f"超级管理员 Chat ID 配置错误: {str(e)}"}
                 )
 
+        # 安全约束（启用时强制）：
+        # - 超管必须是 allowed 的子集
+        # - 通知接收方必须是超管的子集（避免把全局库存/运营信息发给普通用户）
+        # - redeem_chat_ids 必须是 allowed 的子集（否则配置无意义且易误解）
+        if enabled:
+            try:
+                allowed_ids = set(_parse_tg_chat_ids(allowed_chat_ids_raw))
+                super_admin_ids = set(_parse_tg_chat_ids(super_admin_chat_ids_raw)) if super_admin_chat_ids_raw else set()
+                notify_ids = set(_parse_tg_chat_ids(notify_chat_ids_raw)) if notify_chat_ids_raw else set()
+                redeem_ids = set(_parse_tg_chat_ids(redeem_chat_ids_raw)) if redeem_chat_ids_raw else set()
+            except Exception as e:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": str(e)},
+                )
+
+            if super_admin_ids and not super_admin_ids.issubset(allowed_ids):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "超级管理员 Chat ID 必须包含在允许的 Chat ID 白名单中"},
+                )
+            if notify_ids and not notify_ids.issubset(super_admin_ids):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "库存预警通知 Chat ID 必须是超级管理员 Chat ID 的子集"},
+                )
+            if redeem_ids and not redeem_ids.issubset(allowed_ids):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"success": False, "error": "/redeem Chat ID 必须是允许的 Chat ID 白名单的子集（留空则默认=允许白名单）"},
+                )
+
         # secret_token 为空则自动生成，避免误配置导致所有回调 403
         if not secret_token:
             secret_token = secrets.token_urlsafe(32)
@@ -1581,6 +1626,7 @@ async def update_telegram_settings(
             "public_base_url": public_base_url,
             "tg_bot_token": bot_token,
             "tg_allowed_chat_ids": allowed_chat_ids_raw,
+            "tg_redeem_chat_ids": redeem_chat_ids_raw,
             "tg_withdraw_enabled": "true" if withdraw_enabled else "false",
             "tg_super_admin_chat_ids": super_admin_chat_ids_raw,
             "tg_notify_chat_ids": notify_chat_ids_raw,
@@ -1664,19 +1710,19 @@ async def sync_telegram_webhook(
             )
 
         # 同步命令（用于 Telegram 输入 / 时的命令联想）
-        # - 默认 scope（群/频道/通用）：不展示高风险命令
-        # - 私聊 scope：展示补账号导入命令 /importteam
+        # - 默认 scope（群/频道/通用）：展示常用命令（执行时仍会按“私聊/超管”做权限校验）
+        # - 私聊 scope：补充私聊专用与超管命令
         commands_default = [
             {"command": "help", "description": "查看帮助"},
-            {"command": "redeem", "description": "自动兑换上车：/redeem 邮箱"},
             {"command": "start", "description": "开始/帮助"},
-            {"command": "status", "description": "查看业务状态：/status"},
+            {"command": "redeem", "description": "自动兑换上车（仅私聊）：/redeem 邮箱"},
+            {"command": "status", "description": "查看业务状态（仅超管私聊）：/status"},
         ]
         commands_private = [
             *commands_default,
-            {"command": "records", "description": "查询使用记录(有效期内)：/records 邮箱"},
-            {"command": "withdraw", "description": "撤销上车(需确认)：/withdraw 邮箱或ID"},
-            {"command": "importteam", "description": "补账号导入(仅私聊)：/importteam AT"},
+            {"command": "records", "description": "查询使用记录(有效期内，仅私聊)：/records 邮箱"},
+            {"command": "withdraw", "description": "撤销上车(仅私聊，需确认)：/withdraw 邮箱或ID"},
+            {"command": "importteam", "description": "补账号导入（仅超管私聊）：/importteam AT"},
         ]
 
         cmd_default_result = await set_my_commands(
