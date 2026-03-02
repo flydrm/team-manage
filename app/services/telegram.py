@@ -27,6 +27,7 @@ async def send_message(
     *,
     reply_to_message_id: Optional[int] = None,
     disable_web_page_preview: bool = True,
+    reply_markup: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     发送 Telegram 消息
@@ -42,6 +43,8 @@ async def send_message(
     }
     if reply_to_message_id is not None:
         payload["reply_to_message_id"] = reply_to_message_id
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -66,6 +69,56 @@ async def send_message(
 
     except Exception as e:
         logger.error(f"Telegram sendMessage 异常: {e} (token={_mask_token(bot_token)})")
+        return {"success": False, "data": None, "error": str(e)}
+
+
+async def answer_callback_query(
+    bot_token: str,
+    callback_query_id: str,
+    *,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+) -> Dict[str, Any]:
+    """
+    回应 Telegram callback_query（用于 InlineKeyboard 按钮点击后的提示与停止 loading）
+    """
+    if not bot_token:
+        return {"success": False, "data": None, "error": "Bot Token 未配置"}
+    if not callback_query_id:
+        return {"success": False, "data": None, "error": "callback_query_id 不能为空"}
+
+    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/answerCallbackQuery"
+    payload: Dict[str, Any] = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    if show_alert:
+        payload["show_alert"] = True
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+        data = {}
+        try:
+            data = resp.json()
+        except Exception:
+            pass
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            err = data.get("description") if isinstance(data, dict) else resp.text
+            logger.warning(
+                f"Telegram answerCallbackQuery 失败: status={resp.status_code}, token={_mask_token(bot_token)}, err={err}"
+            )
+            return {"success": False, "data": data, "error": err or f"HTTP {resp.status_code}"}
+
+        if isinstance(data, dict) and not data.get("ok", False):
+            err = data.get("description") or "Telegram 返回 ok=false"
+            logger.warning(f"Telegram answerCallbackQuery 返回 ok=false: token={_mask_token(bot_token)}, err={err}")
+            return {"success": False, "data": data, "error": err}
+
+        return {"success": True, "data": data, "error": None}
+
+    except Exception as e:
+        logger.error(f"Telegram answerCallbackQuery 异常: {e} (token={_mask_token(bot_token)})")
         return {"success": False, "data": None, "error": str(e)}
 
 
