@@ -736,22 +736,28 @@ async def _process_records(
             rows = (await db.execute(stmt)).all()
             found = len(rows)
 
-            title = "🧾 使用记录（全量历史｜最近 {} 条）".format(found) if (is_all and is_superadmin) else "🧾 使用记录（有效期内｜最近 {} 条）".format(found)
-            lines = [title]
+            title = (
+                "🧾 使用记录（全量历史｜最近 {} 条）".format(found)
+                if (is_all and is_superadmin)
+                else "🧾 使用记录（有效期内｜最近 {} 条）".format(found)
+            )
+            lines = [title, f"📧 邮箱: {email}", ""]
 
             if not rows:
                 lines.append("📭 未找到该邮箱的使用记录。")
             else:
-                for record, team_name, team_status, team_expires_at in rows:
+                for record, team_name, _team_status, team_expires_at in rows:
                     src = (record.source or "user").strip().lower() or "user"
                     redeemed_at_text = _format_dt(record.redeemed_at)
                     expires_text = _format_dt(team_expires_at) if team_expires_at is not None else "未知"
-                    status_text = (team_status or "-").strip() if isinstance(team_status, str) else (team_status or "-")
                     team_name_text = (team_name or "-").strip()
-                    tg_part = f"｜💬 {record.tg_chat_id}" if (src == "tg" and record.tg_chat_id is not None) else ""
                     lines.append(
-                        f"- #{record.id}｜📅 {redeemed_at_text}｜📍 {src}{tg_part}｜👥 Team {record.team_id}({team_name_text})｜⏳ {expires_text}｜🎟️ {record.code}"
+                        f"- #{record.id}｜📅 {redeemed_at_text}｜👥 Team {record.team_id}({team_name_text})｜🎟️ {record.code}"
                     )
+                    detail_parts = [f"⏳ 到期: {expires_text}", f"📍 {src}"]
+                    if src == "tg" and record.tg_chat_id is not None:
+                        detail_parts.append(f"💬 {record.tg_chat_id}")
+                    lines.append("  " + "｜".join(detail_parts))
 
                 if found == limit and limit < 20:
                     lines.append("…（可能还有更多记录，可提高 n，最多 20）")
