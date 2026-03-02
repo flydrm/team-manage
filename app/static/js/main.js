@@ -175,6 +175,8 @@ function initAdminAutoRedeem() {
         const generatedCodes = payload && payload.generated_codes ? Number(payload.generated_codes) : 0;
 
         if (success) {
+            if (payload && payload.email) lines.push(`邮箱: ${payload.email}`);
+            if (payload && payload.available_seats != null) lines.push(`📦 当前总可用车位: ${payload.available_seats}`);
             if (payload && payload.message) lines.push(String(payload.message));
             if (payload && payload.used_code) lines.push(`使用兑换码: ${payload.used_code}`);
             if (generatedCodes > 0) lines.push(`本次自动生成兑换码: ${generatedCodes}`);
@@ -230,6 +232,9 @@ function initAdminAutoRedeem() {
             if (response.ok && data.success) {
                 showToast('兑换成功', 'success');
                 renderResult(true, data);
+                // 避免误操作重复点击导致同一邮箱重复上车：成功后清空输入框
+                emailInput.value = '';
+                emailInput.focus();
             } else {
                 const errorMsg = normalizeErrorMessage(data, '兑换失败');
                 showToast(errorMsg, 'error');

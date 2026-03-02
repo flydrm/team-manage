@@ -199,15 +199,24 @@ async def admin_auto_redeem(
     email = str(redeem_data.email).strip()
     result = await auto_redeem_by_email(email, db, source="admin")
 
+    # 成功/失败都尽量返回当前总可用车位（用于前端披露与判断库存）
+    available_seats = None
+    try:
+        available_seats = int(await team_service.get_total_available_seats(db))
+    except Exception:
+        available_seats = None
+
     if result.get("success"):
-        return JSONResponse(content=result)
+        # 便于前端渲染与排查：成功时回显邮箱
+        return JSONResponse(content={**result, "email": email, "available_seats": available_seats})
 
     error = result.get("error") or "兑换失败"
     status_code = status.HTTP_400_BAD_REQUEST
     if "自动生成兑换码失败" in error or "批量生成兑换码失败" in error or error.startswith("自动兑换失败"):
         status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    return JSONResponse(status_code=status_code, content=result)
+    # 失败也回显邮箱（避免前端无法关联本次请求）
+    return JSONResponse(status_code=status_code, content={**result, "email": email, "available_seats": available_seats})
 
 
 @router.get("/redeem", response_class=HTMLResponse)
