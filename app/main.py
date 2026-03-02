@@ -65,6 +65,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# HTML 页面不缓存：避免浏览器/代理缓存旧模板，导致引用旧静态资源
+@app.middleware("http")
+async def no_store_html_middleware(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "text/html" in content_type:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return response
+
 # 全局异常处理
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -96,6 +110,28 @@ app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="stati
 
 # 配置模板引擎
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+def static_url(request: Request, path: str) -> str:
+    """
+    生成带版本号的静态资源 URL（cache-busting），避免更新后需要手动清理浏览器缓存。
+
+    版本号来源：静态文件的 mtime（最后修改时间戳）。
+    """
+    rel = (path or "").strip().lstrip("/")
+    if not rel:
+        return str(request.url_for("static", path="/"))
+
+    mtime = 0
+    try:
+        mtime = int((APP_DIR / "static" / rel).stat().st_mtime)
+    except Exception:
+        mtime = 0
+
+    url = str(request.url_for("static", path="/" + rel))
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}v={mtime}"
+
+templates.env.globals["static_url"] = static_url
 
 # 添加模板过滤器
 def format_datetime(dt):

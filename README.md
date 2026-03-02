@@ -17,6 +17,8 @@ docker compose up -d
 git pull && docker compose down && docker compose up -d --build
 ```
 
+> 提示：系统已对静态资源（JS/CSS）自动加版本号，更新后一般无需手动清浏览器缓存/清 Cookie。
+
 ## ✨ 功能特性
 
 ### 管理员功能
