@@ -62,7 +62,7 @@ git pull && docker compose down && docker compose up -d --build
 - **Telegram Bot 自动兑换**
   - 在 Telegram 中发送 `/redeem user@example.com` 自动兑换并分配 Team（无可用兑换码时自动生成 10 个无过期质保码后继续）
   - 兑换成功回执会返回“当前总可用车位”，便于判断库存
-  - 发送 `/status` 查看业务状态统计（车位/Team/兑换码），发送 `/status full` 查看更详细统计
+  - 发送 `/status` 查看业务状态统计（车位/Team/兑换码/使用记录），发送 `/status full` 查看更详细统计（含 24h/7d 趋势、即将到期 Team 等）
   - 私聊 Bot 发送 `/records user@example.com` 查询有效期内使用记录；发送 `/withdraw user@example.com` 可撤销上车（按钮二次确认）
   - 私聊 Bot 发送 `/importteam <Access Token>` 可直接导入/补账号（复用后台 Team 导入逻辑）
   - 配置与对接说明见 [integration_docs.md](integration_docs.md)

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, case
 
 from app.database import AsyncSessionLocal
 from app.models import RedemptionCode, RedemptionRecord, Team
@@ -483,6 +483,10 @@ def _format_business_status(
     code_status_counts: Dict[str, int],
     unused_warranty: int,
     unused_normal: int,
+    records_total: Optional[int] = None,
+    records_today: Optional[int] = None,
+    records_this_week: Optional[int] = None,
+    records_this_month: Optional[int] = None,
     full: bool = False,
     redeem_24h: Optional[int] = None,
     redeem_7d: Optional[int] = None,
@@ -515,6 +519,20 @@ def _format_business_status(
         f"🎟️ 兑换码：总 {int(code_total)}",
         f"📌 状态：unused {code_unused}(质保 {int(unused_warranty)} / 普通 {int(unused_normal)}) / used {code_used} / expired {code_expired} / warranty_active {code_warranty_active} / other {int(other_code)}",
     ]
+    if (
+        records_total is not None
+        and records_today is not None
+        and records_this_week is not None
+        and records_this_month is not None
+    ):
+        lines.append(
+            "🧾 使用记录：总 {total} ｜今日 {today} ｜本周 {week} ｜本月 {month}".format(
+                total=int(records_total),
+                today=int(records_today),
+                week=int(records_this_week),
+                month=int(records_this_month),
+            )
+        )
 
     if not full:
         return "\n".join(lines).strip()
@@ -524,6 +542,18 @@ def _format_business_status(
         lines.append(f"- 24h 兑换次数：{int(redeem_24h)}")
     if redeem_7d is not None:
         lines.append(f"- 7d 兑换次数：{int(redeem_7d)}")
+
+    if (
+        records_total is not None
+        and records_today is not None
+        and records_this_week is not None
+        and records_this_month is not None
+    ):
+        lines.extend(["", "🧾 使用记录"])
+        lines.append(f"- 总记录数：{int(records_total)}")
+        lines.append(f"- 今日使用：{int(records_today)}")
+        lines.append(f"- 本周使用：{int(records_this_week)}")
+        lines.append(f"- 本月使用：{int(records_this_month)}")
 
     lines.extend(["", "⏳ 即将到期 Team（Top 5）"])
     if expiring_teams:
@@ -1505,6 +1535,10 @@ async def telegram_webhook(request: Request):
 
             redeem_24h = None
             redeem_7d = None
+            records_total = None
+            records_today = None
+            records_this_week = None
+            records_this_month = None
             expiring_teams = None
             if is_full:
                 now = get_now()
@@ -1574,6 +1608,26 @@ async def telegram_webhook(request: Request):
                 )
                 expiring_teams = [{k: v for k, v in t.items() if k != "_expires_at_dt"} for t in candidates[:5]]
 
+            # 使用记录披露（口径对齐 /admin/records：total/today/this_week/this_month）
+            now = get_now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            week_start = today_start - timedelta(days=today_start.weekday())
+            month_start = today_start.replace(day=1)
+            stats_row = (
+                await db.execute(
+                    select(
+                        func.count(RedemptionRecord.id).label("total"),
+                        func.sum(case((RedemptionRecord.redeemed_at >= today_start, 1), else_=0)).label("today"),
+                        func.sum(case((RedemptionRecord.redeemed_at >= week_start, 1), else_=0)).label("this_week"),
+                        func.sum(case((RedemptionRecord.redeemed_at >= month_start, 1), else_=0)).label("this_month"),
+                    )
+                )
+            ).one()
+            records_total = int(stats_row.total or 0)
+            records_today = int(stats_row.today or 0)
+            records_this_week = int(stats_row.this_week or 0)
+            records_this_month = int(stats_row.this_month or 0)
+
         status_text = _format_business_status(
             available_seats=int(available_seats),
             threshold=int(threshold),
@@ -1584,6 +1638,10 @@ async def telegram_webhook(request: Request):
             code_status_counts=code_status_counts,
             unused_warranty=unused_warranty,
             unused_normal=unused_normal,
+            records_total=records_total,
+            records_today=records_today,
+            records_this_week=records_this_week,
+            records_this_month=records_this_month,
             full=is_full,
             redeem_24h=redeem_24h,
             redeem_7d=redeem_7d,

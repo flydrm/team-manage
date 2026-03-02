@@ -238,6 +238,10 @@ curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 /status full
 ```
 
+说明：
+- `/status` 会披露使用记录统计（总记录数/今日/本周/本月），口径对齐后台“使用记录”页。
+- `/status full` 在保留 24h/7d 兑换趋势的同时，也会展示使用记录统计与更多运营信息。
+
 补账号导入（**仅私聊**，避免在群聊泄漏 Token）：
 ```
 /importteam <Access Token>
