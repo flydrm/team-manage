@@ -63,7 +63,7 @@ git pull && docker compose down && docker compose up -d --build
   - 详细对接说明见 [integration_docs.md](integration_docs.md)
 - **Telegram Bot 自动兑换**
   - 私聊发送 `/redeem user@example.com` 自动兑换并分配 Team（可通过 `tg_redeem_chat_ids` 限制可用人员；留空则默认=允许白名单；无可用兑换码时自动生成 10 个无过期质保码后继续）
-  - 兑换成功回执会返回“当前总可用车位”，便于判断库存
+  - 仅超管的兑换成功回执会返回“当前总可用车位”，便于判断库存（普通用户不披露库存信息）
   - 仅超管私聊可用：`/status`（支持 `/status full`）、`/importteam <Access Token>`
   - 私聊可用：`/records user@example.com` 查询有效期内使用记录（超管可 `all` 查询全量）；`/withdraw user@example.com` 撤销上车（按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录；超管可撤销所有来源）
   - 配置与对接说明见 [integration_docs.md](integration_docs.md)

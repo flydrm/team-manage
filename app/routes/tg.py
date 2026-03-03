@@ -676,10 +676,17 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
                     err or "-",
                 )
             if result.get("success"):
+                # 库存信息仅超管可见：避免普通成员看到“当前总可用车位”
                 try:
-                    result["available_seats"] = int(await team_service.get_total_available_seats(db))
+                    super_admin_raw = await settings_service.get_setting(db, "tg_super_admin_chat_ids", "")
+                    super_admin_ids = _parse_chat_ids(super_admin_raw)
                 except Exception:
-                    pass
+                    super_admin_ids = set()
+                if chat_id in super_admin_ids:
+                    try:
+                        result["available_seats"] = int(await team_service.get_total_available_seats(db))
+                    except Exception:
+                        pass
             text = _format_redeem_result(result)
             await send_message(bot_token, chat_id, text, reply_to_message_id=reply_to_message_id)
         except Exception as e:
