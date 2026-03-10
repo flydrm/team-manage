@@ -602,6 +602,15 @@ def _format_business_status(
 
 
 def _format_redeem_result(result: Dict[str, Any]) -> str:
+    """
+    格式化 Telegram /redeem 回执。
+
+    约定：
+    - 失败时仅返回友好错误文案，避免回执过长。
+    - 成功时展示兑换结果、Team 信息，以及带 emoji 的运营字段。
+    - `today_redeem_count` 表示当前 chat_id 今日成功兑换次数。
+    - `available_seats` 表示系统当前全局总可用车位。
+    """
     if result.get("success"):
         team_info = result.get("team_info") or {}
         msg = (result.get("message") or "").strip()
@@ -616,6 +625,11 @@ def _format_redeem_result(result: Dict[str, Any]) -> str:
             lines.append(f"👥 Team: {team_name or '-'} (ID: {team_id if team_id is not None else '-'})")
         if team_info.get("expires_at"):
             lines.append(f"📅 到期时间: {_format_iso_dt(team_info.get('expires_at'))}")
+        if result.get("today_redeem_count") is not None:
+            try:
+                lines.append(f"📊 当前 Chat ID 今日已兑换: {int(result.get('today_redeem_count'))}")
+            except Exception:
+                pass
         if result.get("available_seats") is not None:
             try:
                 lines.append(f"📦 当前总可用车位: {int(result.get('available_seats'))}")
@@ -643,7 +657,11 @@ def _format_import_result(result: Dict[str, Any]) -> str:
 
 async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], email: str) -> None:
     """
-    后台任务：执行兑换并回发结果到 Telegram
+    后台任务：执行兑换并回发结果到 Telegram。
+
+    成功时会额外补充两类回执信息：
+    - 当前 chat_id 今日已兑换次数
+    - 当前系统总可用车位
     """
     async with AsyncSessionLocal() as db:
         try:
@@ -676,17 +694,33 @@ async def _process_redeem(chat_id: int, reply_to_message_id: Optional[int], emai
                     err or "-",
                 )
             if result.get("success"):
-                # 库存信息仅超管可见：避免普通成员看到“当前总可用车位”
                 try:
-                    super_admin_raw = await settings_service.get_setting(db, "tg_super_admin_chat_ids", "")
-                    super_admin_ids = _parse_chat_ids(super_admin_raw)
+                    # 统计当前 chat_id 当天已成功兑换次数，口径与 /status 的“今日使用”保持一致。
+                    now = get_now()
+                    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    result["today_redeem_count"] = int(
+                        (
+                            await db.execute(
+                                select(func.count())
+                                .select_from(RedemptionRecord)
+                                .where(
+                                    and_(
+                                        RedemptionRecord.source == "tg",
+                                        RedemptionRecord.tg_chat_id == int(chat_id),
+                                        RedemptionRecord.redeemed_at >= today_start,
+                                    )
+                                )
+                            )
+                        ).scalar()
+                        or 0
+                    )
                 except Exception:
-                    super_admin_ids = set()
-                if chat_id in super_admin_ids:
-                    try:
-                        result["available_seats"] = int(await team_service.get_total_available_seats(db))
-                    except Exception:
-                        pass
+                    pass
+                try:
+                    # 总可用车位对所有允许兑换的 chat_id 可见，方便直接判断库存是否充足。
+                    result["available_seats"] = int(await team_service.get_total_available_seats(db))
+                except Exception:
+                    pass
             text = _format_redeem_result(result)
             await send_message(bot_token, chat_id, text, reply_to_message_id=reply_to_message_id)
         except Exception as e:

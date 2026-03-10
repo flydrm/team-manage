@@ -152,127 +152,136 @@ async def handle_low_stock(request: Request):
 ## 5. Telegram Bot 自动兑换（Webhook）
 
 该功能用于在 Telegram 中通过命令触发“后台免兑换码上车”流程（与 `POST /admin/redeem/auto` 逻辑一致）。
-
-另外，Telegram Bot 也支持“补账号导入”（复用 `TeamService.import_team_single` 的导入逻辑），用于在库存不足时快速导入新的 Team 账号。
+同时，Telegram Bot 也支持“补账号导入”（复用 `TeamService.import_team_single` 的导入逻辑），适合在库存不足时快速补充新的 Team 账号。
 
 ### 配置位置
 管理员后台 -> 系统设置 -> **库存预警 Webhook** 下方 -> **Telegram Bot**
 
 需要配置：
-- **启用 Telegram TEAM 兑换**
-- **PUBLIC_BASE_URL**：你的系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
-- **Bot Token**：从 BotFather 获取
-- **允许的 Chat ID 白名单**：仅白名单中的 chat_id 可使用（支持逗号/空格/换行分隔；群组/频道可能是负数）
-- **/redeem Chat ID（可用人员）**：允许使用 `/redeem` 的 chat_id 列表；留空则默认=白名单（建议用于控制谁能“拉人上车”）
-- **启用 TG 撤销（/withdraw）**：开启后允许在 TG 私聊使用撤销功能（带按钮二次确认）
-- **超级管理员 Chat ID（超管）**：超管私聊可用 `/status`、`/importteam`，并拥有 `/records all` 与 `/withdraw` 全量权限（仍需在白名单中）
-- **库存预警通知 Chat ID**：用于接收“库存不足预警”消息（仅允许超管；保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用超管列表；支持逗号/空格/换行分隔；群组/频道可能是负数）
-- **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
+- ✅ **启用 Telegram TEAM 兑换**：开启 Telegram 自动上车能力
+- 🌐 **PUBLIC_BASE_URL**：系统外网可访问地址（用于拼接 Webhook：`{PUBLIC_BASE_URL}/tg/webhook`）
+- 🤖 **Bot Token**：从 BotFather 获取
+- 🪪 **允许的 Chat ID 白名单**：仅白名单中的 `chat_id` 可使用；支持逗号 / 空格 / 换行分隔，群组 / 频道可能是负数
+- 👥 **/redeem Chat ID（可用人员）**：允许使用 `/redeem` 的 `chat_id` 列表；留空则默认 = 白名单（建议用于控制谁能“拉人上车”）
+- 🧹 **启用 TG 撤销（/withdraw）**：开启后允许在 TG 私聊中使用撤销功能（带按钮二次确认）
+- 👑 **超级管理员 Chat ID（超管）**：超管私聊可用 `/status`、`/importteam`，并拥有 `/records all` 与 `/withdraw` 全量权限（仍需在白名单中）
+- 🚨 **库存预警通知 Chat ID**：用于接收“库存不足预警”消息；仅允许超管，保存为空则不发送 TG 预警通知；兼容旧版本：未配置该项时会回退使用超管列表；支持逗号 / 空格 / 换行分隔，群组 / 频道可能是负数
+- 🔐 **Webhook Secret Token**：为空保存时系统会自动生成（用于校验 Telegram 回调 Header）
 
-约束（启用 TG 时强制校验）：
-- `tg_super_admin_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集
-- `tg_notify_chat_ids` 必须是 `tg_super_admin_chat_ids` 的子集
-- `tg_redeem_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集（留空则默认=白名单）
+配置约束（启用 TG 时强制校验）：
+- 🔒 `tg_super_admin_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集
+- 🔒 `tg_notify_chat_ids` 必须是 `tg_super_admin_chat_ids` 的子集
+- 🔒 `tg_redeem_chat_ids` 必须是 `tg_allowed_chat_ids` 的子集（留空则默认 = 白名单）
 
 #### 如何获取 Chat ID（参考）
-建议在“同步 Webhook”之前获取 chat_id（Webhook 启用后 `getUpdates` 会冲突）。
+建议在“同步 Webhook”之前获取 `chat_id`，因为 Webhook 启用后 `getUpdates` 会冲突。
 
 说明：
-- **同步 Webhook 后仍然可以随时新增/修改白名单 chat_id**：只需要在后台“Telegram Bot”配置里更新白名单并保存即可（通常不需要重新同步 Webhook，除非你更换了 `PUBLIC_BASE_URL` / `Bot Token` / `Secret Token`）。
-- “冲突”的意思是：当 Webhook 启用后，Telegram 会将消息更新推送到 Webhook，此时再调用 `getUpdates` 会返回 Conflict 错误（这是 Telegram 的机制限制）。
-
-- 私聊：对 Bot 发送任意消息后，调用 `getUpdates` 查看 `message.chat.id`
-- 群组：把 Bot 拉进群并发送任意消息，同样通过 `getUpdates` 查看 `message.chat.id`（通常为负数，超级群一般以 `-100` 开头）
+- ℹ️ 同步 Webhook 后仍然可以随时新增 / 修改白名单 `chat_id`：只需在后台“Telegram Bot”配置中更新并保存即可。通常不需要重新同步 Webhook，除非你更换了 `PUBLIC_BASE_URL`、`Bot Token` 或 `Secret Token`
+- ⚠️ 这里的“冲突”指：Webhook 启用后，Telegram 会把消息更新推送到 Webhook，此时再调用 `getUpdates` 会返回 Conflict 错误，这是 Telegram 的机制限制
+- 💬 私聊：对 Bot 发送任意消息后，调用 `getUpdates` 查看 `message.chat.id`
+- 👥 群组：把 Bot 拉进群并发送任意消息，同样通过 `getUpdates` 查看 `message.chat.id`（通常为负数，超级群一般以 `-100` 开头）
 
 示例：
 ```bash
 curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 ```
 
-如果你已经同步了 Webhook，但后续需要再获取新的 chat_id，可以临时删除 Webhook 后再用 `getUpdates` 拉取（拿到 chat_id 后再回到后台点击一次“同步 Webhook”即可）：
+如果你已经同步了 Webhook，但后续需要再获取新的 `chat_id`，可以临时删除 Webhook 后再用 `getUpdates` 拉取（拿到 `chat_id` 后，再回到后台点击一次“同步 Webhook”即可）：
 ```bash
 curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
 curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
 ```
 
 ### 一键同步 Webhook
-点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`，并同步命令列表（`setMyCommands`，用于输入 `/` 时联想出 `/help`、`/redeem` 等命令）：
-- Webhook URL：`{PUBLIC_BASE_URL}/tg/webhook`
-- Secret Token：`tg_secret_token`
+点击“同步 Webhook”后，系统会调用 Telegram `setWebhook`，并同步命令列表（`setMyCommands`，用于在输入 `/` 时联想出 `/help`、`/redeem` 等命令）：
+- 🔗 Webhook URL：`{PUBLIC_BASE_URL}/tg/webhook`
+- 🔐 Secret Token：`tg_secret_token`
 
 系统收到回调后会校验：
-- Header `X-Telegram-Bot-Api-Secret-Token` 必须匹配 `tg_secret_token`
-- `chat_id` 必须在白名单中
+- 🔐 Header `X-Telegram-Bot-Api-Secret-Token` 必须匹配 `tg_secret_token`
+- 🪪 `chat_id` 必须在白名单中
 
 命令联想说明：
-- 同步完成后，在 Telegram 输入 `/` 会出现命令列表：
-  - **群聊/频道/默认**：`/help`、`/redeem`、`/start`、`/status`（仅超管私聊）
-  - **私聊**：除以上命令外，还会出现 `/records`（查询记录）、`/withdraw`（撤销上车）、`/importteam`（仅超管私聊）
-- 如果未立刻出现，可能是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试。
+- 💬 同步完成后，在 Telegram 输入 `/` 会出现命令列表
+- 👥 群聊 / 频道 / 默认：`/help`、`/redeem`、`/start`、`/status`（仅超管私聊）
+- 🤖 私聊：除以上命令外，还会出现 `/records`（查询记录）、`/withdraw`（撤销上车）、`/importteam`（仅超管私聊）
+- ⏳ 如果未立刻出现，通常是 Telegram 客户端缓存，建议等待一会儿或重新打开聊天窗口再试
 
 ### 使用方法
-在 Telegram **私聊**对 Bot 发送命令（需要 chat_id 在白名单中）：
+✅ 自动上车（仅私聊，需要 `chat_id` 在白名单中）：
 ```
 /redeem user@example.com
 ```
 说明：
-- `/redeem` 仅支持私聊；如配置了 `tg_redeem_chat_ids`，则仅该列表中的 chat_id（以及超管）可使用
+- 🔒 `/redeem` 仅支持私聊；如配置了 `tg_redeem_chat_ids`，则仅该列表中的 `chat_id`（以及超管）可使用
 
-查询使用记录（**仅私聊**，默认仅返回有效期内记录）：
+🧾 查询使用记录（仅私聊，默认仅返回有效期内记录）：
 ```
 /records user@example.com
 /records user@example.com 10
 ```
-超级管理员可查询全量历史：
+👑 超级管理员可查询全量历史：
 ```
 /records user@example.com all
 ```
 
-撤销上车（**仅私聊**，需要按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录；超管可撤销所有来源）：
+🧹 撤销上车（仅私聊，需要按钮二次确认；普通用户仅可撤销自己通过 TG 拉上车的记录；超管可撤销所有来源）：
 ```
 /withdraw user@example.com
 /withdraw 123
 ```
 说明：
-- `/withdraw 邮箱` 会先返回最近候选记录供点击选择，再进入确认
-- `/withdraw 记录ID` 会直接进入确认（无需手输确认码）
+- ↩️ `/withdraw 邮箱` 会先返回最近候选记录供点击选择，再进入确认
+- 🎯 `/withdraw 记录ID` 会直接进入确认（无需手输确认码）
 
-查看业务状态统计（**仅超管私聊**）：
+📊 查看业务状态（仅超管私聊）：
 ```
 /status
 ```
 
-查看更详细统计（**仅超管私聊**，兑换趋势、即将到期 Team 等）：
+📈 查看更详细统计（仅超管私聊，兑换趋势、即将到期 Team 等）：
 ```
 /status full
 ```
-
 说明：
-- `/status` 会披露使用记录统计（总记录数/今日/本周/本月），口径对齐后台“使用记录”页。
-- `/status full` 在保留 24h/7d 兑换趋势的同时，也会展示使用记录统计与更多运营信息。
+- 🧾 `/status` 会披露使用记录统计（总记录数 / 今日 / 本周 / 本月），口径对齐后台“使用记录”页
+- 📈 `/status full` 在保留 24h / 7d 兑换趋势的同时，也会展示使用记录统计与更多运营信息
 
-补账号导入（**仅超管私聊**，避免在群聊泄漏 Token）：
+📥 补账号导入（仅超管私聊，避免在群聊泄漏 Token）：
 ```
 /importteam <Access Token>
 ```
-建议导入完成后手动删除包含 AT 的消息，以降低泄漏风险。
+说明：
+- ⚠️ 建议导入完成后手动删除包含 AT 的消息，以降低泄漏风险
 
-也支持“回复导入”：回复一条包含 AT 的消息，然后发送：
+↩️ 也支持“回复导入”：回复一条包含 AT 的消息，然后发送：
 ```
 /importteam
 ```
 
-返回信息包含：
-- 兑换结果
-- 使用的兑换码 `used_code`（注意：会暴露兑换码）
-- 分配的 Team 信息（若兑换成功）
-- 仅超管的兑换成功回执会返回“当前总可用车位”（方便判断库存是否充足；普通用户不披露库存信息）
-- 系统会写入使用记录来源 `source=tg`，并落库 `tg_chat_id`（仅数字 ID），便于在后台“使用记录”按来源/Chat ID 查询
+/redeem 成功回执包含：
+- ✅ 兑换结果
+- 🎟️ 使用的兑换码 `used_code`（注意：会暴露兑换码）
+- 👥 分配的 Team 信息（若兑换成功）
+- 📊 当前 `chat_id` 今日已兑换数量（仅兑换成功时返回）
+- 📦 当前总可用车位（仅兑换成功时返回，所有允许兑换的 `chat_id` 可见）
+- 🧾 系统会写入使用记录来源 `source=tg`，并落库 `tg_chat_id`（仅数字 ID），便于在后台“使用记录”按来源 / Chat ID 查询
 
-说明：
-- 若系统无可用兑换码，会自动生成 10 个**无过期质保**兑换码后继续兑换
-- 为避免群聊噪音，默认不响应非命令消息
-- Bot 内置频率限制；如果短时间内频繁触发限流，会提示“操作太频繁/频繁触发限流”
+示例成功回执：
+```
+✅ 兑换成功
+🎟️ 兑换码: ABCD1234
+👥 Team: Example Team (ID: 12)
+📅 到期时间: 2026-03-31 23:59:59
+📊 当前 Chat ID 今日已兑换: 3
+📦 当前总可用车位: 18
+```
+
+补充说明：
+- 🛠️ 若系统无可用兑换码，会自动生成 10 个**无过期质保**兑换码后继续兑换
+- 🔕 为避免群聊噪音，默认不响应非命令消息
+- ⏱️ Bot 内置频率限制；如果短时间内频繁触发限流，会提示“操作太频繁 / 频繁触发限流”
 
 ---
 
